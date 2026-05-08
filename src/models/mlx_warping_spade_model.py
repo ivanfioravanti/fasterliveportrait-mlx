@@ -91,6 +91,15 @@ class MlxWarpingSpadeModel:
         mx.eval(self.warping.parameters())
         mx.eval(self.spade.parameters())
 
+        # mx.compile saves ~8 ms on SPADE in isolation but doesn't translate
+        # to e2e gains (likely compile cache interaction with the rest of the
+        # pipeline). Disabled by default; opt in via compile_spade=True.
+        if kwargs.get("compile_spade", False):
+            spade = self.spade
+            self._spade_fn = mx.compile(lambda x: spade(x))
+        else:
+            self._spade_fn = self.spade
+
     def _to_mx(self, x):
         if isinstance(x, mx.array):
             return x.astype(self.dtype)
@@ -108,7 +117,7 @@ class MlxWarpingSpadeModel:
         kp_d_mx = self._to_mx(kp_d)
 
         wout = self.warping(f_s_mx, kp_d_mx, kp_s_mx)
-        img = self.spade(wout["out"])  # (N, H, W, 3) in [0, 1]
+        img = self._spade_fn(wout["out"])  # (N, H, W, 3) in [0, 1]
         if img.dtype != mx.float32:
             img = img.astype(mx.float32)
         mx.eval(img)

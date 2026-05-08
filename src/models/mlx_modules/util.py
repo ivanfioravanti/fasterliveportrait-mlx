@@ -231,6 +231,35 @@ class Hourglass(nn.Module):
         return self.decoder(self.encoder(x))
 
 
+def conv3d_via_2d(x: mx.array, weight: mx.array, bias: mx.array, padding: int) -> mx.array:
+    """Conv3d implemented as a series of 2D convs along the depth axis.
+
+    For Conv3d configurations dominated by spatial work (K=7 here), this is
+    measurably faster than MLX's stock Conv3d on Apple Silicon because the
+    2D path is more mature in MPS Graph.
+
+    Inputs:
+      x      : (N, D, H, W, IC) NDHWC
+      weight : (OC, kD, kH, kW, IC)
+      bias   : (OC,)
+    Output:
+      (N, D, H, W, OC)
+    """
+    N, D, H, W, IC = x.shape
+    OC, kD, kH, kW, _ = weight.shape
+    pad_d = kD // 2
+    x_padded = mx.pad(x, [(0, 0), (pad_d, pad_d), (0, 0), (0, 0), (0, 0)])
+    out = None
+    for kd in range(kD):
+        x_slice = x_padded[:, kd:kd + D, :, :, :]  # (N, D, H, W, IC)
+        x_2d = x_slice.reshape(N * D, H, W, IC)
+        w_2d = weight[:, kd, :, :, :]  # (OC, kH, kW, IC)
+        y = mx.conv2d(x_2d, w_2d, padding=padding)
+        y = y.reshape(N, D, H, W, OC)
+        out = y if out is None else (out + y)
+    return out + bias
+
+
 def make_coordinate_grid(spatial_size, dtype=mx.float32):
     """3D coordinate grid in normalized [-1, 1] space, layout (D, H, W, 3).
 

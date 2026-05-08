@@ -9,8 +9,12 @@ from __future__ import annotations
 import mlx.core as mx
 import mlx.nn as nn
 
-from .util import Hourglass, BatchNorm3d, make_coordinate_grid, kp2gaussian
+from .util import Hourglass, BatchNorm3d, make_coordinate_grid, kp2gaussian, conv3d_via_2d
 from .grid_sample import grid_sample_3d
+
+
+import os
+_USE_2D_MASK_CONV = os.environ.get("FLP_MLX_2D_MASK", "1") == "1"
 
 
 class DenseMotionNetwork(nn.Module):
@@ -101,7 +105,10 @@ class DenseMotionNetwork(nn.Module):
         x = x.reshape(n, d, h, w, kpp1 * cc)
 
         prediction = self.hourglass(x)  # (N, D, H, W, hourglass_out)
-        mask_logits = self.mask(prediction)  # (N, D, H, W, K+1)
+        if _USE_2D_MASK_CONV:
+            mask_logits = conv3d_via_2d(prediction, self.mask.weight, self.mask.bias, padding=3)
+        else:
+            mask_logits = self.mask(prediction)  # (N, D, H, W, K+1)
         mask = mx.softmax(mask_logits, axis=-1)
         # Take mask in shape (N, K+1, D, H, W, 1) for broadcasting against sparse_motion
         mask_perm = mx.transpose(mask, (0, 4, 1, 2, 3))[..., None]
