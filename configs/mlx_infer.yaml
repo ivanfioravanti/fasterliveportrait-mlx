@@ -12,8 +12,9 @@ models:
     dtype: "bf16"
     model_path: "./checkpoints/liveportrait_torch/motion_extractor.pth"
   landmark:
-    name: "LandmarkModel"
-    predict_type: "ort"
+    name: "MlxLandmarkModel"
+    predict_type: "mlx"
+    dtype: "fp32"  # tiny model, fp32 keeps quality and is already 2.8 ms
     model_path: "./checkpoints/liveportrait_onnx/landmark.onnx"
   face_analysis:
     name: "FaceAnalysisModel"

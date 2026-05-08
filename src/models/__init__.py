@@ -14,3 +14,4 @@ from .mediapipe_face_model import MediaPipeFaceModel
 from .mlx_warping_spade_model import MlxWarpingSpadeModel
 from .mlx_motion_extractor_model import MlxMotionExtractorModel
 from .mlx_appearance_feature_extractor_model import MlxAppearanceFeatureExtractorModel
+from .mlx_landmark_model import MlxLandmarkModel
