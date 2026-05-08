@@ -7,9 +7,34 @@ import numpy as np
 import onnxruntime
 
 import torch
-from torch.cuda import nvtx
+from ..utils.nvtx_compat import nvtx
 from collections import OrderedDict
 import platform
+
+
+def get_default_device():
+    if torch.cuda.is_available():
+        return torch.cuda.current_device()
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def get_default_stream():
+    if torch.cuda.is_available():
+        return torch.cuda.current_stream().cuda_stream
+    return 0
+
+
+def get_ort_providers():
+    system = platform.system().lower()
+    available = set(onnxruntime.get_available_providers())
+    if system == "darwin":
+        ordered = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    else:
+        ordered = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return [p for p in ordered if p in available] or ["CPUExecutionProvider"]
+
 
 try:
     import tensorrt as trt
@@ -180,7 +205,7 @@ class OnnxRuntimePredictor:
         assert os.path.exists(model_path), "model path must exist!"
         # print("loading ort model:{}".format(model_path))
         self.debug = kwargs.get("debug", False)
-        providers = ['CUDAExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']
+        providers = get_ort_providers()
 
         print(f"OnnxRuntime use {providers}")
         opts = onnxruntime.SessionOptions()

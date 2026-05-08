@@ -1,6 +1,6 @@
 import copy
 import torch
-from .predictor import get_predictor
+from .predictor import get_predictor, get_default_device, get_default_stream
 
 
 class BaseModel:
@@ -11,8 +11,8 @@ class BaseModel:
     def __init__(self, **kwargs):
         self.kwargs = copy.deepcopy(kwargs)
         self.predictor = get_predictor(**self.kwargs)
-        self.device = torch.cuda.current_device()
-        self.cudaStream = torch.cuda.current_stream().cuda_stream
+        self.device = get_default_device()
+        self.cudaStream = get_default_stream()
         self.predict_type = kwargs.get("predict_type", "trt")
 
         if self.predictor is not None:

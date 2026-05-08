@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from src.utils.crop import crop_image, _transform_pts
 import torch
-from torch.cuda import nvtx
+from ..utils.nvtx_compat import nvtx
 from .predictor import numpy_to_torch_dtype_dict
 
 

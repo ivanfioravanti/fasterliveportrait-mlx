@@ -1,0 +1,123 @@
+models:
+  warping_spade:
+    name: "MlxWarpingSpadeModel"
+    predict_type: "mlx"
+    dtype: "bf16"
+    model_path:
+      - "./checkpoints/liveportrait_torch/warping_module.pth"
+      - "./checkpoints/liveportrait_torch/spade_generator.pth"
+  motion_extractor:
+    name: "MlxMotionExtractorModel"
+    predict_type: "mlx"
+    dtype: "bf16"
+    model_path: "./checkpoints/liveportrait_torch/motion_extractor.pth"
+  landmark:
+    name: "LandmarkModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_onnx/landmark.onnx"
+  face_analysis:
+    name: "FaceAnalysisModel"
+    predict_type: "ort"
+    model_path:
+      - "./checkpoints/liveportrait_onnx/retinaface_det_static.onnx"
+      - "./checkpoints/liveportrait_onnx/face_2dpose_106_static.onnx"
+  app_feat_extractor:
+    name: "MlxAppearanceFeatureExtractorModel"
+    predict_type: "mlx"
+    dtype: "bf16"
+    model_path: "./checkpoints/liveportrait_torch/appearance_feature_extractor.pth"
+  stitching:
+    name: "StitchingModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_onnx/stitching.onnx"
+  stitching_eye_retarget:
+    name: "StitchingModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_onnx/stitching_eye.onnx"
+  stitching_lip_retarget:
+    name: "StitchingModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_onnx/stitching_lip.onnx"
+
+animal_models:
+  warping_spade:
+    name: "MlxWarpingSpadeModel"
+    predict_type: "mlx"
+    dtype: "bf16"
+    model_path:
+      - "./checkpoints/liveportrait_torch/warping_module.pth"
+      - "./checkpoints/liveportrait_torch/spade_generator.pth"
+  motion_extractor:
+    name: "MlxMotionExtractorModel"
+    predict_type: "mlx"
+    dtype: "bf16"
+    model_path: "./checkpoints/liveportrait_torch/motion_extractor.pth"
+  app_feat_extractor:
+    name: "MlxAppearanceFeatureExtractorModel"
+    predict_type: "mlx"
+    dtype: "bf16"
+    model_path: "./checkpoints/liveportrait_torch/appearance_feature_extractor.pth"
+  stitching:
+    name: "StitchingModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_animal_onnx/stitching.onnx"
+  stitching_eye_retarget:
+    name: "StitchingModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_animal_onnx/stitching_eye.onnx"
+  stitching_lip_retarget:
+    name: "StitchingModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_animal_onnx/stitching_lip.onnx"
+  landmark:
+    name: "LandmarkModel"
+    predict_type: "ort"
+    model_path: "./checkpoints/liveportrait_onnx/landmark.onnx"
+  face_analysis:
+    name: "FaceAnalysisModel"
+    predict_type: "ort"
+    model_path:
+      - "./checkpoints/liveportrait_onnx/retinaface_det_static.onnx"
+      - "./checkpoints/liveportrait_onnx/face_2dpose_106_static.onnx"
+
+joyvasa_models:
+  motion_model_path: "checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese.pt"
+  audio_model_path: "checkpoints/chinese-hubert-base"
+  motion_template_path: "checkpoints/JoyVASA/motion_template/motion_template.pkl"
+
+crop_params:
+  src_dsize: 512
+  src_scale: 2.3
+  src_vx_ratio: 0.0
+  src_vy_ratio: -0.125
+  dri_scale: 2.2
+  dri_vx_ratio: 0.0
+  dri_vy_ratio: -0.1
+
+
+infer_params:
+  flag_crop_driving_video: False
+  flag_normalize_lip: True
+  flag_source_video_eye_retargeting: False
+  flag_video_editing_head_rotation: False
+  flag_eye_retargeting: False
+  flag_lip_retargeting: False
+  flag_stitching: True
+  flag_relative_motion: True
+  flag_pasteback: True
+  flag_do_crop: True
+  flag_do_rot: True
+
+  lip_normalize_threshold: 0.03
+  source_video_eye_retargeting_threshold: 0.18
+  driving_smooth_observation_variance: 1e-7
+  anchor_frame: 0
+  mask_crop_path: "./assets/mask_template.png"
+  driving_multiplier: 1.0
+  animation_region: "all"
+
+  cfg_mode: "incremental"
+  cfg_scale: 1.2
+
+  source_max_dim: 1280
+  source_division: 2

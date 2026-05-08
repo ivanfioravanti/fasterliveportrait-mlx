@@ -6,7 +6,7 @@
 
 from .base_model import BaseModel
 import torch
-from torch.cuda import nvtx
+from ..utils.nvtx_compat import nvtx
 from .predictor import numpy_to_torch_dtype_dict
 
 

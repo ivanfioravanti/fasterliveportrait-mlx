@@ -11,7 +11,7 @@ import cv2
 from .predictor import get_predictor
 from ..utils import face_align
 import torch
-from torch.cuda import nvtx
+from ..utils.nvtx_compat import nvtx
 from .predictor import numpy_to_torch_dtype_dict
 
 
@@ -90,8 +90,9 @@ class FaceAnalysisModel:
     def __init__(self, **kwargs):
         self.model_paths = kwargs.get("model_path", [])
         self.predict_type = kwargs.get("predict_type", "trt")
-        self.device = torch.cuda.current_device()
-        self.cudaStream = torch.cuda.current_stream().cuda_stream
+        from .predictor import get_default_device, get_default_stream
+        self.device = get_default_device()
+        self.cudaStream = get_default_stream()
 
         assert self.model_paths
         self.face_det = get_predictor(predict_type=self.predict_type, model_path=self.model_paths[0])
