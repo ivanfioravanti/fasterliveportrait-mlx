@@ -90,13 +90,22 @@ class SPADEResnetBlock(nn.Module):
             self.norm_s = SPADE(fin, label_nc)
 
     def __call__(self, x, seg):
+        # When the residual stream is in fp16, conv accumulation can overflow
+        # past G_middle_4 (activations exceed sqrt(fp16 max ~ 256) per element
+        # for a 9-tap conv). Run the inner block ops in fp32 and cast back at
+        # the residual sum. fp32 reductions also keep InstanceNorm stable.
+        in_dtype = x.dtype
+        upcast = in_dtype in (mx.float16,)
+        x32 = x.astype(mx.float32) if upcast else x
+        seg32 = seg.astype(mx.float32) if upcast else seg
         if self.learned_shortcut:
-            x_s = self.conv_s(self.norm_s(x, seg))
+            x_s = self.conv_s(self.norm_s(x32, seg32))
         else:
-            x_s = x
-        dx = self.conv_0(nn.leaky_relu(self.norm_0(x, seg), 2e-1))
-        dx = self.conv_1(nn.leaky_relu(self.norm_1(dx, seg), 2e-1))
-        return x_s + dx
+            x_s = x32
+        dx = self.conv_0(nn.leaky_relu(self.norm_0(x32, seg32), 2e-1))
+        dx = self.conv_1(nn.leaky_relu(self.norm_1(dx, seg32), 2e-1))
+        out = x_s + dx
+        return out.astype(in_dtype) if upcast else out
 
 
 class SPADEDecoder(nn.Module):

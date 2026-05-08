@@ -24,7 +24,7 @@ models:
   app_feat_extractor:
     name: "MlxAppearanceFeatureExtractorModel"
     predict_type: "mlx"
-    dtype: "bf16"
+    dtype: "bf16"  # one-shot init only, keep stable
     model_path: "./checkpoints/liveportrait_torch/appearance_feature_extractor.pth"
   stitching:
     name: "StitchingModel"
@@ -43,19 +43,19 @@ animal_models:
   warping_spade:
     name: "MlxWarpingSpadeModel"
     predict_type: "mlx"
-    dtype: "bf16"
+    dtype: "fp16"
     model_path:
       - "./checkpoints/liveportrait_torch/warping_module.pth"
       - "./checkpoints/liveportrait_torch/spade_generator.pth"
   motion_extractor:
     name: "MlxMotionExtractorModel"
     predict_type: "mlx"
-    dtype: "bf16"
+    dtype: "fp16"
     model_path: "./checkpoints/liveportrait_torch/motion_extractor.pth"
   app_feat_extractor:
     name: "MlxAppearanceFeatureExtractorModel"
     predict_type: "mlx"
-    dtype: "bf16"
+    dtype: "fp16"
     model_path: "./checkpoints/liveportrait_torch/appearance_feature_extractor.pth"
   stitching:
     name: "StitchingModel"
