@@ -5,11 +5,55 @@ import mlx.core as mx
 import numpy as np
 import pytest
 import torch
+import torch.nn as torch_nn
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _make_torch_motion_model(
+    *,
+    target="sample",
+    use_indicator=False,
+    n_diff_steps=4,
+    guiding_conditions="audio,",
+    cfg_mode="incremental",
+):
+    from src.models.JoyVASA.dit_talking_head import DenoisingNetwork, DiffusionSchedule, DitTalkingHead
+
+    torch_model = DitTalkingHead.__new__(DitTalkingHead)
+    torch_nn.Module.__init__(torch_model)
+    torch_model.target = target
+    torch_model.architecture = "decoder"
+    torch_model.motion_feat_dim = 4
+    torch_model.fps = 25
+    torch_model.n_motions = 3
+    torch_model.n_prev_motions = 2
+    torch_model.feature_dim = 8
+    torch_model.cfg_mode = cfg_mode
+    guiding_conditions = guiding_conditions.split(",") if guiding_conditions else []
+    torch_model.guiding_conditions = [cond for cond in guiding_conditions if cond in ["audio"]]
+    torch_model.start_motion_feat = torch_nn.Parameter(torch.randn(1, 2, 4))
+    torch_model.start_audio_feat = torch_nn.Parameter(torch.randn(1, 2, 8))
+    if "audio" in torch_model.guiding_conditions:
+        torch_model.null_audio_feat = torch_nn.Parameter(torch.randn(1, 1, 8))
+    torch_model.denoising_net = DenoisingNetwork(
+        device="cpu",
+        motion_feat_dim=4,
+        use_indicator=use_indicator,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_prev_motions=2,
+        n_motions=3,
+        n_diff_steps=n_diff_steps,
+    )
+    torch_model.diffusion_sched = DiffusionSchedule(n_diff_steps, "cosine")
+    return torch_model.eval()
 
 
 @pytest.mark.parametrize("mode", ("linear", "quadratic", "sigmoid", "cosine"))
@@ -185,3 +229,144 @@ def test_mlx_denoising_network_matches_torch(use_indicator):
     )
 
     np.testing.assert_allclose(mlx_out, torch_out, rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.parametrize("target", ("sample", "noise"))
+def test_mlx_motion_sampler_matches_torch_without_cfg(target, monkeypatch):
+    import src.models.JoyVASA.dit_talking_head as torch_dit
+    from src.models.mlx_joyvasa_motion_model import MlxJoyVASAMotionModel
+
+    torch.manual_seed(2)
+    rng = np.random.default_rng(23)
+    torch_model = _make_torch_motion_model(
+        target=target,
+        use_indicator=False,
+        n_diff_steps=3,
+        guiding_conditions="",
+    )
+    mlx_model = MlxJoyVASAMotionModel(
+        target=target,
+        motion_feat_dim=4,
+        n_motions=3,
+        n_prev_motions=2,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_diff_steps=3,
+        diff_schedule="cosine",
+        guiding_conditions="",
+    )
+    mlx_model.load_pytorch_state_dict(torch_model.state_dict())
+
+    audio = rng.normal(size=(2, 3, 8)).astype(np.float32)
+    prev_motion = rng.normal(size=(2, 2, 4)).astype(np.float32)
+    prev_audio = rng.normal(size=(2, 2, 8)).astype(np.float32)
+    motion_at_t = rng.normal(size=(2, 3, 4)).astype(np.float32)
+    noise_by_step = {
+        3: rng.normal(size=(2, 3, 4)).astype(np.float32),
+        2: rng.normal(size=(2, 3, 4)).astype(np.float32),
+    }
+    noise_iter = iter([torch.from_numpy(noise_by_step[3]), torch.from_numpy(noise_by_step[2])])
+
+    monkeypatch.setattr(torch, "randn_like", lambda value: next(noise_iter).to(dtype=value.dtype))
+    monkeypatch.setattr(torch_dit, "tqdm", lambda values: values)
+
+    with torch.no_grad():
+        torch_motion, torch_noise, torch_audio = torch_model.sample(
+            torch.from_numpy(audio),
+            torch.from_numpy(prev_motion),
+            torch.from_numpy(prev_audio),
+            torch.from_numpy(motion_at_t),
+            cfg_cond=[],
+            dynamic_threshold=0,
+        )
+    mlx_motion, mlx_noise, mlx_audio = mlx_model.sample(
+        mx.array(audio),
+        mx.array(prev_motion),
+        mx.array(prev_audio),
+        mx.array(motion_at_t),
+        cfg_cond=[],
+        dynamic_threshold=0,
+        noise_by_step=noise_by_step,
+    )
+
+    np.testing.assert_allclose(np.array(mlx_motion), torch_motion.numpy(), rtol=6e-3, atol=6e-3)
+    np.testing.assert_allclose(np.array(mlx_noise), torch_noise.numpy(), rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(np.array(mlx_audio), torch_audio.numpy(), rtol=1e-6, atol=1e-7)
+
+
+def test_mlx_motion_sampler_matches_torch_with_audio_cfg(monkeypatch):
+    import src.models.JoyVASA.dit_talking_head as torch_dit
+    from src.models.mlx_joyvasa_motion_model import MlxJoyVASAMotionModel
+
+    torch.manual_seed(3)
+    rng = np.random.default_rng(29)
+    torch_model = _make_torch_motion_model(
+        target="sample",
+        use_indicator=True,
+        n_diff_steps=3,
+        guiding_conditions="audio,",
+        cfg_mode="incremental",
+    )
+    mlx_model = MlxJoyVASAMotionModel(
+        target="sample",
+        motion_feat_dim=4,
+        n_motions=3,
+        n_prev_motions=2,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_diff_steps=3,
+        diff_schedule="cosine",
+        cfg_mode="incremental",
+        guiding_conditions="audio,",
+        use_indicator=True,
+    )
+    mlx_model.load_pytorch_state_dict(torch_model.state_dict())
+
+    audio = rng.normal(size=(1, 3, 8)).astype(np.float32)
+    prev_motion = rng.normal(size=(1, 2, 4)).astype(np.float32)
+    prev_audio = rng.normal(size=(1, 2, 8)).astype(np.float32)
+    motion_at_t = rng.normal(size=(1, 3, 4)).astype(np.float32)
+    indicator = np.array([[1.0, 1.0, 0.0]], dtype=np.float32)
+    noise_by_step = {
+        3: rng.normal(size=(1, 3, 4)).astype(np.float32),
+        2: rng.normal(size=(1, 3, 4)).astype(np.float32),
+    }
+    noise_iter = iter([torch.from_numpy(noise_by_step[3]), torch.from_numpy(noise_by_step[2])])
+
+    monkeypatch.setattr(torch, "randn_like", lambda value: next(noise_iter).to(dtype=value.dtype))
+    monkeypatch.setattr(torch_dit, "tqdm", lambda values: values)
+
+    with torch.no_grad():
+        torch_motion, torch_noise, torch_audio = torch_model.sample(
+            torch.from_numpy(audio),
+            torch.from_numpy(prev_motion),
+            torch.from_numpy(prev_audio),
+            torch.from_numpy(motion_at_t),
+            indicator=torch.from_numpy(indicator),
+            cfg_mode="incremental",
+            cfg_cond=["audio"],
+            cfg_scale=1.2,
+            dynamic_threshold=0,
+        )
+    mlx_motion, mlx_noise, mlx_audio = mlx_model.sample(
+        mx.array(audio),
+        mx.array(prev_motion),
+        mx.array(prev_audio),
+        mx.array(motion_at_t),
+        indicator=mx.array(indicator),
+        cfg_mode="incremental",
+        cfg_cond=["audio"],
+        cfg_scale=1.2,
+        dynamic_threshold=0,
+        noise_by_step=noise_by_step,
+    )
+
+    np.testing.assert_allclose(np.array(mlx_motion), torch_motion.numpy(), rtol=6e-3, atol=6e-3)
+    np.testing.assert_allclose(np.array(mlx_noise), torch_noise.numpy(), rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(np.array(mlx_audio), torch_audio.numpy(), rtol=1e-6, atol=1e-7)

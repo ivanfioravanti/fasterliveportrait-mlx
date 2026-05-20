@@ -276,3 +276,237 @@ def _load_mha(module, state_dict, prefix):
     module.value_proj.bias = v_b
     module.out_proj.weight = _to_mx(state_dict[prefix + "out_proj.weight"])
     module.out_proj.bias = _to_mx(state_dict[prefix + "out_proj.bias"])
+
+
+class MlxJoyVASAMotionModel(nn.Module):
+    def __init__(
+        self,
+        target="sample",
+        architecture="decoder",
+        motion_feat_dim=76,
+        fps=25,
+        n_motions=100,
+        n_prev_motions=10,
+        feature_dim=512,
+        n_heads=8,
+        n_layers=8,
+        mlp_ratio=4,
+        align_mask_width=1,
+        no_use_learnable_pe=True,
+        n_diff_steps=500,
+        diff_schedule="cosine",
+        cfg_mode="incremental",
+        guiding_conditions="audio,",
+        use_indicator=None,
+    ):
+        super().__init__()
+        if architecture != "decoder":
+            raise ValueError(f"Unknown architecture {architecture}!")
+
+        self.target = target
+        self.architecture = architecture
+        self.motion_feat_dim = motion_feat_dim
+        self.fps = fps
+        self.n_motions = n_motions
+        self.n_prev_motions = n_prev_motions
+        self.feature_dim = feature_dim
+        self.cfg_mode = cfg_mode
+        self.guiding_conditions = _normalize_cfg_conditions(guiding_conditions)
+
+        self.start_motion_feat = mx.random.normal((1, n_prev_motions, motion_feat_dim))
+        self.start_audio_feat = mx.random.normal((1, n_prev_motions, feature_dim))
+        if "audio" in self.guiding_conditions:
+            self.null_audio_feat = mx.random.normal((1, 1, feature_dim))
+
+        self.denoising_net = MlxDenoisingNetwork(
+            motion_feat_dim=motion_feat_dim,
+            use_indicator=use_indicator,
+            architecture=architecture,
+            feature_dim=feature_dim,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            mlp_ratio=mlp_ratio,
+            align_mask_width=align_mask_width,
+            no_use_learnable_pe=no_use_learnable_pe,
+            n_prev_motions=n_prev_motions,
+            n_motions=n_motions,
+            n_diff_steps=n_diff_steps,
+        )
+        self.diffusion_sched = MlxDiffusionSchedule(n_diff_steps, diff_schedule)
+
+    def sample(
+        self,
+        audio_or_feat,
+        prev_motion_feat=None,
+        prev_audio_feat=None,
+        motion_at_T=None,
+        indicator=None,
+        cfg_mode=None,
+        cfg_cond=None,
+        cfg_scale=1.15,
+        flexibility=0,
+        dynamic_threshold=None,
+        ret_traj=False,
+        noise_by_step=None,
+    ):
+        if dynamic_threshold:
+            raise NotImplementedError("dynamic_threshold is not ported to MLX yet")
+
+        if audio_or_feat.ndim == 2:
+            raise NotImplementedError("Raw-audio JoyVASA feature extraction is not ported to MLX yet")
+        if audio_or_feat.ndim != 3:
+            raise ValueError(f"Incorrect audio input shape {audio_or_feat.shape}")
+        if audio_or_feat.shape[1] != self.n_motions:
+            raise ValueError(f"Incorrect audio feature length {audio_or_feat.shape[1]}")
+
+        batch_size = audio_or_feat.shape[0]
+        audio_feat = audio_or_feat
+
+        if cfg_mode is None:
+            cfg_mode = self.cfg_mode
+        cfg_cond = self.guiding_conditions if cfg_cond is None else _normalize_cfg_conditions(cfg_cond)
+        if not isinstance(cfg_scale, list):
+            cfg_scale = [cfg_scale] * len(cfg_cond)
+        if cfg_cond:
+            cfg_cond, cfg_scale = zip(*sorted(zip(cfg_cond, cfg_scale), key=lambda x: ["audio"].index(x[0])))
+        else:
+            cfg_cond, cfg_scale = [], []
+
+        if prev_motion_feat is None:
+            prev_motion_feat = mx.broadcast_to(
+                self.start_motion_feat.astype(audio_feat.dtype),
+                (batch_size, self.n_prev_motions, self.motion_feat_dim),
+            )
+        if prev_audio_feat is None:
+            prev_audio_feat = mx.broadcast_to(
+                self.start_audio_feat.astype(audio_feat.dtype),
+                (batch_size, self.n_prev_motions, self.feature_dim),
+            )
+        if motion_at_T is None:
+            motion_at_T = mx.random.normal((batch_size, self.n_motions, self.motion_feat_dim), dtype=audio_feat.dtype)
+
+        if "audio" in cfg_cond:
+            audio_feat_null = mx.broadcast_to(
+                self.null_audio_feat.astype(audio_feat.dtype),
+                (batch_size, self.n_motions, self.feature_dim),
+            )
+        else:
+            audio_feat_null = audio_feat
+
+        audio_feat_in = [audio_feat_null]
+        for cond in cfg_cond:
+            if cond == "audio":
+                audio_feat_in.append(audio_feat)
+
+        n_entries = len(audio_feat_in)
+        audio_feat_in = mx.concatenate(audio_feat_in, axis=0)
+        prev_motion_feat_in = _repeat_batch(prev_motion_feat, n_entries)
+        prev_audio_feat_in = _repeat_batch(prev_audio_feat, n_entries)
+        indicator_in = _repeat_batch(indicator, n_entries) if indicator is not None else None
+
+        motion_at_t = motion_at_T
+        traj = {self.diffusion_sched.num_steps: motion_at_t} if ret_traj else None
+        for t in range(self.diffusion_sched.num_steps, 0, -1):
+            if t > 1:
+                z = _noise_for_step(t, motion_at_T, noise_by_step)
+            else:
+                z = mx.zeros_like(motion_at_T)
+
+            alpha = self.diffusion_sched.alphas[t]
+            alpha_bar = self.diffusion_sched.alpha_bars[t]
+            alpha_bar_prev = self.diffusion_sched.alpha_bars[t - 1]
+            sigma = self.diffusion_sched.get_sigmas(t, flexibility)
+
+            motion_in = _repeat_batch(motion_at_t, n_entries)
+            step_in = mx.full((batch_size * n_entries,), t, dtype=mx.int32)
+            results = self.denoising_net(
+                motion_in,
+                audio_feat_in,
+                prev_motion_feat_in,
+                prev_audio_feat_in,
+                step_in,
+                indicator_in,
+            )
+            results = mx.split(results, n_entries, axis=0)
+
+            target_theta = results[0][:, -self.n_motions:]
+            for i in range(0, n_entries - 1):
+                scale = cfg_scale[i]
+                if cfg_mode == "independent":
+                    target_theta = target_theta + scale * (
+                        results[i + 1][:, -self.n_motions:] - results[0][:, -self.n_motions:]
+                    )
+                elif cfg_mode == "incremental":
+                    target_theta = target_theta + scale * (
+                        results[i + 1][:, -self.n_motions:] - results[i][:, -self.n_motions:]
+                    )
+                else:
+                    raise NotImplementedError(f"Unknown cfg_mode {cfg_mode}")
+
+            if self.target == "noise":
+                c0 = 1 / mx.sqrt(alpha)
+                c1 = (1 - alpha) / mx.sqrt(1 - alpha_bar)
+                motion_next = c0 * (motion_at_t - c1 * target_theta) + sigma * z
+            elif self.target == "sample":
+                c0 = (1 - alpha_bar_prev) * mx.sqrt(alpha) / (1 - alpha_bar)
+                c1 = (1 - alpha) * mx.sqrt(alpha_bar_prev) / (1 - alpha_bar)
+                motion_next = c0 * motion_at_t + c1 * target_theta + sigma * z
+            else:
+                raise ValueError(f"Unknown target type: {self.target}")
+
+            motion_at_t = motion_next
+            mx.eval(motion_at_t)
+            if ret_traj:
+                traj[t - 1] = motion_at_t
+
+        if ret_traj:
+            return traj, motion_at_T, audio_feat
+        return motion_at_t, motion_at_T, audio_feat
+
+    def load_pytorch_state_dict(self, state_dict, prefix=""):
+        def has(name):
+            return prefix + name in state_dict
+
+        def get(name):
+            return _to_mx(state_dict[prefix + name])
+
+        self.start_motion_feat = get("start_motion_feat")
+        self.start_audio_feat = get("start_audio_feat")
+        if has("null_audio_feat"):
+            self.null_audio_feat = get("null_audio_feat")
+
+        schedule_prefix = prefix + "diffusion_sched."
+        if any(key.startswith(schedule_prefix) for key in state_dict):
+            self.diffusion_sched.betas = _to_mx(state_dict[schedule_prefix + "betas"])
+            self.diffusion_sched.alphas = _to_mx(state_dict[schedule_prefix + "alphas"])
+            self.diffusion_sched.alpha_bars = _to_mx(state_dict[schedule_prefix + "alpha_bars"])
+            self.diffusion_sched.sigmas_flex = _to_mx(state_dict[schedule_prefix + "sigmas_flex"])
+            self.diffusion_sched.sigmas_inflex = _to_mx(state_dict[schedule_prefix + "sigmas_inflex"])
+            self.diffusion_sched.num_steps = int(self.diffusion_sched.betas.shape[0] - 1)
+
+        denoising_prefix = prefix + "denoising_net."
+        if any(key.startswith(denoising_prefix) for key in state_dict):
+            self.denoising_net.load_pytorch_state_dict(state_dict, denoising_prefix)
+        else:
+            self.denoising_net.load_pytorch_state_dict(state_dict, prefix)
+        mx.eval(self.parameters())
+
+
+def _normalize_cfg_conditions(cfg_cond):
+    if cfg_cond is None:
+        return []
+    if isinstance(cfg_cond, str):
+        cfg_cond = cfg_cond.split(",")
+    return [cond for cond in cfg_cond if cond in ["audio"]]
+
+
+def _repeat_batch(value, n_entries):
+    if n_entries == 1:
+        return value
+    return mx.concatenate([value] * n_entries, axis=0)
+
+
+def _noise_for_step(t, like, noise_by_step):
+    if noise_by_step is None:
+        return mx.random.normal(like.shape, dtype=like.dtype)
+    return _to_mx(noise_by_step[t], dtype=like.dtype)
