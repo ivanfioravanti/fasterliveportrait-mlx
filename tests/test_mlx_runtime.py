@@ -84,6 +84,9 @@ def test_mlx_config_has_no_runtime_ort_models():
     runtime_dependencies = {dep.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0] for dep in pyproject["project"]["dependencies"]}
     assert "onnxruntime" not in runtime_dependencies
     assert "onnx" not in runtime_dependencies
+    assert "kokoro" not in runtime_dependencies
+    assert "mlx-audio" in runtime_dependencies
+    assert "torchgeometry" not in runtime_dependencies
     assert "onnx" in pyproject["dependency-groups"]["convert"]
     assert not (ROOT / "requirements.txt").exists()
     assert not (ROOT / "requirements_macos.txt").exists()
@@ -107,6 +110,31 @@ def test_importing_mlx_runtime_does_not_import_onnxruntime():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+def test_mlx_audio_kokoro_voice_language_mapping():
+    from src.pipelines.mlx_audio_tts import kokoro_lang_code_for_voice
+
+    assert kokoro_lang_code_for_voice("af_heart") == "a"
+    assert kokoro_lang_code_for_voice("bf_alice") == "b"
+    assert kokoro_lang_code_for_voice("jf_alpha") == "j"
+    assert kokoro_lang_code_for_voice("zf_xiaobei") == "z"
+
+
+def test_numpy_paste_back_does_not_require_torchgeometry():
+    import numpy as np
+
+    from src.utils.crop import paste_back_numpy
+
+    crop = np.full((4, 4, 3), 255, dtype=np.uint8)
+    ori = np.zeros((4, 4, 3), dtype=np.uint8)
+    mask = np.ones((4, 4, 1), dtype=np.float32)
+    transform = np.eye(3, dtype=np.float32)
+
+    blended = paste_back_numpy(crop, transform, ori, mask)
+    assert blended.dtype == np.uint8
+    assert blended.shape == ori.shape
+    assert int(blended.min()) == 255
 
 
 @pytest.mark.parametrize(

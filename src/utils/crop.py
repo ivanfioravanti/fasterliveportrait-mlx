@@ -7,8 +7,6 @@ import numpy as np
 import os.path as osp
 from math import sin, cos, acos, degrees
 import cv2
-import torch
-import torchgeometry as tgm
 
 DTYPE = np.float32
 CV2_INTERP = cv2.INTER_LINEAR
@@ -33,32 +31,6 @@ def _transform_img(img, M, dsize, flags=CV2_INTERP, borderMode=None):
         return cv2.warpAffine(img, M[:2, :], dsize=_dsize, flags=flags, borderMode=borderMode, borderValue=(0, 0, 0))
     else:
         return cv2.warpAffine(img, M[:2, :], dsize=_dsize, flags=flags)
-
-
-def _transform_img_torch(img, M, dsize, rotation_center=None, flags=None, borderMode=None):
-    """ Conduct similarity or affine transformation to the image using PyTorch CUDA.
-
-    Args:
-    img (torch.Tensor): Input image tensor (C x H x W)
-    M (torch.Tensor): 2x3 or 3x3 transformation matrix
-    dsize (tuple or int): Target shape (width, height)
-    rotation_center (tuple): Center of rotation (x, y), if None, use image center
-    flags: Not used in this implementation (for compatibility)
-    borderMode: 'zeros' or 'border' for handling out-of-bounds pixels
-
-    Returns:
-    torch.Tensor: Transformed image
-    """
-    if isinstance(dsize, tuple) or isinstance(dsize, list):
-        _dsize = tuple(dsize)
-    else:
-        _dsize = (dsize, dsize)
-
-        # Prepare the transformation matrix
-    M = M[:2, :]  # Ensure it's a 2x3 matrix
-    img_transformed = tgm.warp_affine(img.unsqueeze(0), M[None], (_dsize[1], _dsize[0]))
-    img_transformed = img_transformed.squeeze(0)
-    return img_transformed
 
 
 def _transform_pts(pts, M):
@@ -476,12 +448,26 @@ def paste_back(img_crop, M_c2o, img_ori, mask_ori):
     return result
 
 
-def paste_back_pytorch(img_crop, M_c2o, img_ori, mask_ori):
+def _as_numpy(value):
+    if isinstance(value, np.ndarray):
+        return value
+    if hasattr(value, "detach"):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def paste_back_numpy(img_crop, M_c2o, img_ori, mask_ori):
     """paste back the image
     """
+    img_crop = _as_numpy(img_crop)
+    M_c2o = _as_numpy(M_c2o)
+    img_ori = _as_numpy(img_ori)
+    mask_ori = _as_numpy(mask_ori)
+
+    if mask_ori.ndim == 2:
+        mask_ori = mask_ori[..., None]
+
     dsize = (img_ori.shape[1], img_ori.shape[0])
-    img_crop = img_crop.permute(2, 0, 1).float()
-    img_back = _transform_img_torch(img_crop, M_c2o, dsize=dsize)
-    img_back = img_back.permute(1, 2, 0)
-    img_back = torch.clip(mask_ori * img_back + (1 - mask_ori) * img_ori, 0, 255)
+    img_back = _transform_img(img_crop.astype(np.float32), M_c2o, dsize=dsize)
+    img_back = np.clip(mask_ori * img_back + (1 - mask_ori) * img_ori, 0, 255).astype(np.uint8)
     return img_back

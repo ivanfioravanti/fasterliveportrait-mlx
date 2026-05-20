@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from .. import models
-from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back_pytorch
+from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back_numpy
 from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matrix, calc_lip_close_ratio, \
     calc_eye_close_ratio, transform_keypoint, concat_feat
 from src.utils import utils
@@ -297,12 +297,10 @@ class FasterLivePortraitPipeline:
                     if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
                         mask_ori_float = prepare_paste_back(self.mask_crop, crop_info['M_c2o'],
                                                             dsize=(img_rgb.shape[1], img_rgb.shape[0]))
-                        mask_ori_float = torch.from_numpy(mask_ori_float).to(self.device)
                         src_infos[i].append(mask_ori_float)
                     else:
                         src_infos[i].append(None)
-                    M = torch.from_numpy(crop_info['M_c2o']).to(self.device)
-                    src_infos[i].append(M)
+                    src_infos[i].append(crop_info['M_c2o'])
                 self.src_infos.append(src_infos[:])
             print(f"finish process source:{source_path} >>>>>>>>")
             return len(self.src_infos) > 0
@@ -374,9 +372,8 @@ class FasterLivePortraitPipeline:
 
                 if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and \
                         self.cfg.infer_params.flag_stitching:
-                    mask_ori_float = prepare_paste_back(self.mask_crop, M.cpu().numpy(),
+                    mask_ori_float = prepare_paste_back(self.mask_crop, M,
                                                         dsize=(self.src_imgs[0].shape[1], self.src_imgs[0].shape[0]))
-                    mask_ori_float = torch.from_numpy(mask_ori_float).to(self.device)
             else:
                 x_s_info, source_lmk, R_s, f_s, x_s, x_c_s, lip_delta_before_animation, flag_lip_zero, mask_ori_float, M = \
                     src_info[j]
@@ -527,23 +524,22 @@ class FasterLivePortraitPipeline:
 
             x_d_i_new = x_s + (x_d_i_new - x_s) * self.cfg.infer_params.driving_multiplier
             warping_spade = self.model_dict["warping_spade"]
-            if realtime and getattr(warping_spade, "predict_type", None) == "mlx":
+            if getattr(warping_spade, "predict_type", None) == "mlx":
                 out_crop = warping_spade.predict(
                     f_s, x_s, x_d_i_new, return_numpy=True, return_uint8=True
                 )
             else:
                 out_crop = warping_spade.predict(f_s, x_s, x_d_i_new)
             if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
-                # TODO: pasteback is slow, considering optimize it using multi-threading or GPU
-                # I_p_pstbk = paste_back(out_crop, crop_info['M_c2o'], I_p_pstbk, mask_ori_float)
-                I_p_pstbk = paste_back_pytorch(out_crop, M, I_p_pstbk, mask_ori_float)
+                I_p_pstbk = paste_back_numpy(out_crop, M, I_p_pstbk, mask_ori_float)
         if realtime:
             if isinstance(out_crop, np.ndarray):
                 out_crop_np = out_crop if out_crop.dtype == np.uint8 else out_crop.astype(np.uint8)
             else:
                 out_crop_np = out_crop.to(dtype=torch.uint8).cpu().numpy()
             return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
-        return out_crop.to(dtype=torch.uint8).cpu().numpy(), I_p_pstbk.to(dtype=torch.uint8).cpu().numpy()
+        out_crop_np = out_crop if isinstance(out_crop, np.ndarray) else out_crop.to(dtype=torch.uint8).cpu().numpy()
+        return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
 
     def run(self, image, img_src, src_info, **kwargs):
         img_bgr = image
@@ -551,7 +547,7 @@ class FasterLivePortraitPipeline:
         realtime = kwargs.pop("realtime", False)
         if kwargs.get("first_frame", False):
             self.driving_crop_state = None
-        I_p_pstbk = img_src if realtime else torch.from_numpy(img_src).to(self.device).float()
+        I_p_pstbk = img_src.copy()
         if self.cfg.infer_params.flag_crop_driving_video:
             if self.src_lmk_pre is None:
                 src_face = self.model_dict["face_analysis"].predict(img_bgr)
@@ -641,7 +637,7 @@ class FasterLivePortraitPipeline:
 
     def run_with_pkl(self, dri_motion_info, img_src, src_info, **kwargs):
         realtime = kwargs.pop("realtime", False)
-        I_p_pstbk = img_src if realtime else torch.from_numpy(img_src).to(self.device).float()
+        I_p_pstbk = img_src.copy()
 
         input_eye_ratio = dri_motion_info[1]
         input_lip_ratio = dri_motion_info[2]

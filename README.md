@@ -33,7 +33,13 @@ Supported release surface:
 - Human MLX landmark and stitching weights load from exported `.npz` files at runtime.
 - Animal base models are configured for official LivePortrait animal v1.1 weights.
 - Runtime profiles are available for exact and faster approximate realtime paths.
-- FastAPI, Gradio audio driving, Kokoro text driving, and JoyVASA are present but experimental for this MLX release.
+- FastAPI, Gradio audio driving, MLX-audio text driving, and JoyVASA are present but experimental for this MLX release.
+
+Long-term target: make the user-facing runtime MLX-only so the model stack can later move to
+`mlx-swift`. This branch moves text-to-speech onto MLX-audio, but full Text and Audio driving still
+passes through JoyVASA's PyTorch/Transformers audio-to-motion stack. Treat JoyVASA support here as a
+temporary compatibility path, not the final architecture. See
+[MLX-Only Runtime Migration](docs/mlx_only_migration.md) for the migration order.
 
 ### Setup
 
@@ -51,6 +57,23 @@ uv run python scripts/download_mlx_weights.py \
 ```
 
 This downloads the human MLX weights, animal LivePortrait core MLX weights, and the MediaPipe face landmarker.
+
+Gradio text driving uses [MLX-audio](https://github.com/Blaizzy/mlx-audio) with the default
+`mlx-community/Kokoro-82M-bf16` model. The model and selected voice are downloaded lazily from
+Hugging Face on first use; `checkpoints/Kokoro-82M` is no longer required.
+
+Full text and audio-driven animation still requires the experimental JoyVASA checkpoints listed in
+`configs/mlx_infer.yaml` because JoyVASA converts the generated or uploaded audio into LivePortrait
+motion.
+
+To install those temporary experimental audio-driving assets:
+
+```shell
+uv run python scripts/download_mlx_weights.py \
+  --skip-mlx-weights \
+  --skip-mediapipe \
+  --include-joyvasa
+```
 
 For animal mode, XPose is still required for animal landmark detection. XPose is licensed for non-commercial research use only, so it is not included in the MLX weights repo:
 
