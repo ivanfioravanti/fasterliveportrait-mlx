@@ -110,6 +110,7 @@ class FasterLivePortraitPipeline:
         self.source_path = None
         self.src_infos = []
         self.src_imgs = []
+        self.prepare_source_error = None
         self.is_source_video = False
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -169,6 +170,7 @@ class FasterLivePortraitPipeline:
 
     def prepare_source(self, source_path, **kwargs):
         print(f"process source:{source_path} >>>>>>>>")
+        self.prepare_source_error = None
         try:
             if utils.is_video(source_path):
                 self.is_source_video = True
@@ -186,7 +188,14 @@ class FasterLivePortraitPipeline:
                 src_vcap.release()
             else:
                 img_bgr = cv2.imread(source_path, cv2.IMREAD_COLOR)
+                if img_bgr is None:
+                    self.prepare_source_error = "Could not read source image."
+                    return False
                 src_imgs_bgr = [img_bgr]
+
+            if not src_imgs_bgr:
+                self.prepare_source_error = "Could not read any source frames."
+                return False
 
             self.src_imgs = []
             self.src_infos = []
@@ -206,15 +215,23 @@ class FasterLivePortraitPipeline:
                             'animal_face',
                             0,
                             0
-                        )
+                    )
                     if lmk is None:
+                        self.prepare_source_error = (
+                            "No animal face detected in the source. "
+                            "Check Animal mode and use a clearer animal face image."
+                        )
                         continue
                     self.src_imgs.append(img_rgb)
                     src_faces.append(lmk)
                 else:
                     src_faces = self.model_dict["face_analysis"].predict(img_bgr)
                     if len(src_faces) == 0:
-                        print("No face detected in the this image.")
+                        self.prepare_source_error = (
+                            "No human face detected in the source. "
+                            "If this is an animal image, enable Animal mode."
+                        )
+                        print("No human face detected in this image.")
                         continue
                     self.src_imgs.append(img_rgb)
                     # 如果是实时，只关注最大的那张脸
@@ -303,8 +320,11 @@ class FasterLivePortraitPipeline:
                     src_infos[i].append(crop_info['M_c2o'])
                 self.src_infos.append(src_infos[:])
             print(f"finish process source:{source_path} >>>>>>>>")
+            if len(self.src_infos) == 0 and self.prepare_source_error is None:
+                self.prepare_source_error = "No usable source frames were prepared."
             return len(self.src_infos) > 0
-        except Exception:
+        except Exception as exc:
+            self.prepare_source_error = f"Failed to process source: {exc}"
             traceback.print_exc()
             return False
 
