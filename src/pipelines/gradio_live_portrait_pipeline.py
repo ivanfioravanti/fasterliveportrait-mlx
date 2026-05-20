@@ -82,16 +82,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
     def _require_joyvasa_assets(self):
         required_paths = [
-            self.cfg.joyvasa_models.motion_model_path,
-            self.cfg.joyvasa_models.audio_model_path,
+            self.cfg.joyvasa_models.motion_mlx_model_path,
+            self.cfg.joyvasa_models.audio_mlx_model_path,
             self.cfg.joyvasa_models.motion_template_path,
         ]
-        motion_mlx_model_path = self.cfg.joyvasa_models.get("motion_mlx_model_path")
-        if motion_mlx_model_path:
-            required_paths.append(motion_mlx_model_path)
-        audio_mlx_model_path = self.cfg.joyvasa_models.get("audio_mlx_model_path")
-        if audio_mlx_model_path:
-            required_paths.append(audio_mlx_model_path)
         missing = [path for path in required_paths if not os.path.exists(path)]
         if missing:
             raise gr.Error(
@@ -433,10 +427,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
         if self.joyvasa_pipe is None:
             self._require_joyvasa_assets()
-            self.joyvasa_pipe = JoyVASAAudio2MotionPipeline(motion_model_path=self.cfg.joyvasa_models.motion_model_path,
-                                                            motion_mlx_model_path=self.cfg.joyvasa_models.get("motion_mlx_model_path"),
-                                                            audio_model_path=self.cfg.joyvasa_models.audio_model_path,
-                                                            audio_mlx_model_path=self.cfg.joyvasa_models.get("audio_mlx_model_path"),
+            self.joyvasa_pipe = JoyVASAAudio2MotionPipeline(motion_mlx_model_path=self.cfg.joyvasa_models.motion_mlx_model_path,
+                                                            audio_mlx_model_path=self.cfg.joyvasa_models.audio_mlx_model_path,
                                                             motion_template_path=self.cfg.joyvasa_models.motion_template_path,
                                                             cfg_mode=self.cfg.infer_params.cfg_mode,
                                                             cfg_scale=self.cfg.infer_params.cfg_scale

@@ -27,6 +27,9 @@ MEDIAPIPE_FACE_LANDMARKER_URL = (
 MLX_ALLOW_PATTERNS = (
     "liveportrait_mlx/*.npz",
     "liveportrait_animal_mlx/base_models_v1.1/*.npz",
+    "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
+    "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
+    "JoyVASA/motion_template/motion_template.pkl",
 )
 
 XPOSE_ALLOW_PATTERNS = (
@@ -107,8 +110,8 @@ def download_xpose(checkpoints_dir: Path) -> None:
 
 def download_joyvasa(checkpoints_dir: Path) -> None:
     print(
-        "downloading JoyVASA assets. Note: JoyVASA audio/text driving is "
-        "experimental in this MLX release."
+        "downloading JoyVASA source checkpoints for local MLX conversion. "
+        "The default MLX weights repo already contains JoyVASA runtime weights."
     )
     snapshot_download(
         repo_id=JOYVASA_REPO,
@@ -164,7 +167,7 @@ def main() -> None:
     parser.add_argument(
         "--include-joyvasa",
         action="store_true",
-        help="also download experimental JoyVASA audio-to-motion assets for audio/text driving",
+        help="also download JoyVASA source checkpoints and export local MLX audio-to-motion weights",
     )
     args = parser.parse_args()
 

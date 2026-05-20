@@ -37,8 +37,8 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 - Added `.npz` export/load support for the JoyVASA MLX motion model. The export path
   reads the trusted PyTorch checkpoint once and writes runtime weights that can be
   loaded without importing torch.
-- Integrated the exported MLX JoyVASA motion model into the audio/text driving pipeline.
-  The temporary PyTorch fallback remains available only when `audio_mlx_model_path` is not set.
+- Integrated the exported MLX JoyVASA motion model into the audio/text driving pipeline
+  and removed the PyTorch JoyVASA runtime fallback.
 - Added `.npz` export/load support for the configured JoyVASA HuBERT audio feature path,
   including the audio feature projection and runtime metadata.
 - Integrated the exported MLX HuBERT/audio feature path into the pipeline so configured

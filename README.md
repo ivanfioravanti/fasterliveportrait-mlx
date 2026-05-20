@@ -56,7 +56,8 @@ uv run python scripts/download_mlx_weights.py \
   --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights
 ```
 
-This downloads the human MLX weights, animal LivePortrait core MLX weights, and the MediaPipe face landmarker.
+This downloads the human MLX weights, animal LivePortrait core MLX weights, JoyVASA MLX
+audio-to-motion weights, the JoyVASA motion template, and the MediaPipe face landmarker.
 
 Gradio text driving uses [MLX-audio](https://github.com/Blaizzy/mlx-audio) with the default
 `mlx-community/Kokoro-82M-bf16` model. The model and selected voice are downloaded lazily from
@@ -65,10 +66,13 @@ Hugging Face on first use; `checkpoints/Kokoro-82M` is no longer required.
 Full text and audio-driven animation still requires the experimental JoyVASA assets listed in
 `configs/mlx_infer.yaml` because JoyVASA converts the generated or uploaded audio into LivePortrait
 motion. The configured HuBERT audio encoder and JoyVASA diffusion/motion model run through MLX
-`.npz` weights exported locally from the trusted source checkpoints.
+`.npz` weights downloaded from the MLX weights repo or exported locally from the trusted source
+checkpoints.
+The original JoyVASA `.pt` checkpoint and Transformers HuBERT directory are conversion inputs only;
+they are not part of the Gradio runtime config.
 
-To install those temporary experimental audio-driving assets and export the JoyVASA MLX motion and
-HuBERT audio weights:
+To regenerate those experimental audio-driving weights locally instead of downloading them from the
+MLX weights repo:
 
 ```shell
 uv run python scripts/download_mlx_weights.py \
@@ -81,6 +85,7 @@ That command writes:
 
 - `checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz`
 - `checkpoints/JoyVASA/audio_encoder/hubert_chinese_mlx.npz`
+- `checkpoints/JoyVASA/motion_template/motion_template.pkl`
 
 For animal mode, XPose is still required for animal landmark detection. XPose is licensed for non-commercial research use only, so it is not included in the MLX weights repo:
 
@@ -157,7 +162,9 @@ uv run python scripts/publish_mlx_weights.py \
   --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights
 ```
 
-The publisher intentionally uploads only LivePortrait-derived `.npz` weights. It does not upload XPose or JoyVASA.
+The publisher uploads converted permissive MLX runtime weights, including JoyVASA MLX
+audio-to-motion weights. It does not upload XPose, the original JoyVASA PyTorch checkpoint,
+or the original Transformers HuBERT directory.
 
 ### Run With A Video
 
