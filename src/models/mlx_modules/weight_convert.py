@@ -141,24 +141,48 @@ def convert_pth_to_safetensors(pth_path: str, out_path: str, *, dropping_prefix:
     mx.save_safetensors(out_path, mlx_state)
 
 
-def load_into_model(
-    model,
+def save_converted_npz(
     pth_path: str,
+    out_path: str,
     *,
     dropping_prefix: str = "",
     key_renames: tuple = (),
-    strict: bool = True,
-):
-    """Load a PyTorch .pth into an MLX module by converting in-memory."""
-    import mlx.core as mx
-    import mlx.utils as mu
+) -> None:
     sd = _torch_load(pth_path)
     if isinstance(sd, dict) and "model" in sd and isinstance(sd["model"], dict):
         sd = sd["model"]
     converted = convert_state_dict(
         sd, dropping_prefix=dropping_prefix, key_renames=key_renames
     )
-    mlx_state = {k: mx.array(v) for k, v in converted.items()}
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    np.savez(out_path, **converted)
+
+
+def _load_npz_state(path: str):
+    import mlx.core as mx
+
+    with np.load(path) as data:
+        return {name: mx.array(data[name].astype(np.float32)) for name in data.files}
+
+
+def load_into_model(
+    model,
+    path: str,
+    *,
+    dropping_prefix: str = "",
+    key_renames: tuple = (),
+    strict: bool = True,
+):
+    """Load exported MLX runtime weights into an MLX module."""
+    import mlx.core as mx
+    import mlx.utils as mu
+
+    if not str(path).endswith(".npz"):
+        raise ValueError(
+            f"MLX runtime models require exported .npz weights, got {path}. "
+            "Run scripts/export_mlx_weights.py first."
+        )
+    mlx_state = _load_npz_state(path)
 
     expected_keys = {k for k, _ in mu.tree_flatten(model.parameters())}
     if strict:

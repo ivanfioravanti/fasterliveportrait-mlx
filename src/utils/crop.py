@@ -3,14 +3,11 @@
 """
 cropping function and the related preprocess functions for cropping
 """
-import pdb
-
 import numpy as np
 import os.path as osp
 from math import sin, cos, acos, degrees
 import cv2
 import torch
-import torch.nn.functional as F
 import torchgeometry as tgm
 
 DTYPE = np.float32

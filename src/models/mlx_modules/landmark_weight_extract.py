@@ -16,7 +16,6 @@ import re
 from typing import Dict, Tuple
 
 import numpy as np
-import onnx
 import mlx.core as mx
 import mlx.utils as mu
 
@@ -24,7 +23,7 @@ import mlx.utils as mu
 _BLOCK_RE = re.compile(r"^(stages\.\d+\.\d+)\.dwconv\.weight$")
 
 
-def _block_pwconv_map(model: onnx.ModelProto) -> Dict[str, Tuple[str, str]]:
+def _block_pwconv_map(model) -> Dict[str, Tuple[str, str]]:
     """For each block stages.X.Y, return (pwconv1_const_name, pwconv2_const_name)."""
     in_to_nodes: Dict[str, list] = {}
     for n in model.graph.node:
@@ -61,7 +60,7 @@ def _block_pwconv_map(model: onnx.ModelProto) -> Dict[str, Tuple[str, str]]:
     return blocks
 
 
-def _walk_to_ln_tail_after(model: onnx.ModelProto, start_out: str,
+def _walk_to_ln_tail_after(model, start_out: str,
                             init_names: set) -> Tuple[str, str] | None:
     """Walk forward from start_out following the unique-child chain and find
     the next (Mul, Add) pair where Mul has a constant input and Add has a
@@ -95,7 +94,7 @@ def _walk_to_ln_tail_after(model: onnx.ModelProto, start_out: str,
     return None
 
 
-def _walk_back_to_ln_tail_before(model: onnx.ModelProto, target_out: str,
+def _walk_back_to_ln_tail_before(model, target_out: str,
                                   init_names: set) -> Tuple[str, str] | None:
     """Walk backwards from a node consuming target_out — find the Mul/Add LN
     tail whose Add output IS target_out."""
@@ -117,6 +116,8 @@ def _walk_back_to_ln_tail_before(model: onnx.ModelProto, target_out: str,
 
 
 def load_landmark_from_onnx(model, onnx_path: str) -> None:
+    import onnx
+
     onnx_model = onnx.load(onnx_path)
     init_map = {init.name: onnx.numpy_helper.to_array(init) for init in onnx_model.graph.initializer}
     init_names = set(init_map.keys())
@@ -184,6 +185,23 @@ def load_landmark_from_onnx(model, onnx_path: str) -> None:
     for head in ("fc_coeff", "fc_lmk", "fc_pts"):
         put(f"{head}.weight", init_map[f"{head}.weight"])
         put(f"{head}.bias", init_map[f"{head}.bias"])
+
+    expected = {k for k, _ in mu.tree_flatten(model.parameters())}
+    missing = expected - set(new_state.keys())
+    extra = set(new_state.keys()) - expected
+    if missing or extra:
+        raise ValueError(
+            f"landmark state mismatch.\n  missing: {sorted(missing)[:8]}\n  extra: {sorted(extra)[:8]}"
+        )
+    model.update(mu.tree_unflatten(list(new_state.items())))
+
+
+def load_landmark_from_npz(model, npz_path: str) -> None:
+    with np.load(npz_path) as data:
+        new_state = {
+            key: mx.array(np.ascontiguousarray(data[key].astype(np.float32)))
+            for key in data.files
+        }
 
     expected = {k for k, _ in mu.tree_flatten(model.parameters())}
     missing = expected - set(new_state.keys())

@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-import pdb
-
 import cv2
 import numpy as np
 import ffmpeg
@@ -141,6 +139,31 @@ def calc_eye_close_ratio(lmk: np.ndarray, target_eye_ratio: np.ndarray = None) -
 
 def calc_lip_close_ratio(lmk: np.ndarray) -> np.ndarray:
     return calculate_distance_ratio(lmk, 90, 102, 48, 66)
+
+
+def _keypoints_to_numpy(kp):
+    if isinstance(kp, torch.Tensor):
+        return kp.detach().cpu().numpy()
+    return np.asarray(kp)
+
+
+def _convex_keypoint_measure(kp: np.ndarray) -> float:
+    pts = np.asarray(kp).reshape(-1, kp.shape[-1]).astype(np.float32)
+    try:
+        from scipy.spatial import ConvexHull
+
+        measure = float(ConvexHull(pts).volume)
+    except Exception:
+        pts_2d = pts[:, :2]
+        hull = cv2.convexHull(pts_2d)
+        measure = float(cv2.contourArea(hull))
+    return max(measure, 1e-6)
+
+
+def calc_motion_multiplier(kp_source, kp_driving_initial) -> float:
+    source_measure = _convex_keypoint_measure(_keypoints_to_numpy(kp_source))
+    driving_measure = _convex_keypoint_measure(_keypoints_to_numpy(kp_driving_initial))
+    return float(np.sqrt(source_measure) / np.sqrt(driving_measure))
 
 
 def _transform_img(img, M, dsize, flags=cv2.INTER_LINEAR, borderMode=None):

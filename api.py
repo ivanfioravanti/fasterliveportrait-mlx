@@ -2,24 +2,23 @@
 # @Time    : 2024/9/13 0:23
 # @Project : FasterLivePortrait
 # @FileName: api.py
-import pdb
 import shutil
-from typing import Optional, Dict, Any
+from typing import Optional
 import io
 import os
 import subprocess
-import uvicorn
+import sys
+import shlex
 import cv2
 import time
 import numpy as np
-import os
 import datetime
 import platform
 import pickle
 from tqdm import tqdm
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, FastAPI, Request, Response, UploadFile
-from fastapi import File, Body, Form
+from fastapi import FastAPI, UploadFile
+from fastapi import File, Form
 from omegaconf import OmegaConf
 from fastapi.responses import StreamingResponse
 from zipfile import ZipFile
@@ -40,6 +39,7 @@ logger_f = logger.get_logger("faster_liveportrait_api", log_file=os.path.join(lo
 app = FastAPI()
 
 global pipe
+DEFAULT_MLX_WEIGHTS_REPO = "ivanfioravanti/FasterLivePortrait-MLX-weights"
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"
@@ -52,143 +52,83 @@ def check_all_checkpoints_exist(infer_cfg):
     check whether all checkpoints exist
     :return:
     """
-    ret = True
-    for name in infer_cfg.models:
-        if not isinstance(infer_cfg.models[name].model_path, str):
-            for i in range(len(infer_cfg.models[name].model_path)):
-                infer_cfg.models[name].model_path[i] = infer_cfg.models[name].model_path[i].replace("./checkpoints",
-                                                                                                    checkpoints_dir)
-                if not os.path.exists(infer_cfg.models[name].model_path[i]) and not os.path.exists(
-                        infer_cfg.models[name].model_path[i][:-4] + ".onnx"):
+    def resolve_model_path(path):
+        return path.replace("./checkpoints", checkpoints_dir)
+
+    def check_group(group):
+        for name in group:
+            model_path = group[name].model_path
+            if isinstance(model_path, str):
+                group[name].model_path = resolve_model_path(model_path)
+                if not os.path.exists(group[name].model_path):
                     return False
-        else:
-            infer_cfg.models[name].model_path = infer_cfg.models[name].model_path.replace("./checkpoints",
-                                                                                          checkpoints_dir)
-            if not os.path.exists(infer_cfg.models[name].model_path) and not os.path.exists(
-                    infer_cfg.models[name].model_path[:-4] + ".onnx"):
-                return False
-    for name in infer_cfg.animal_models:
-        if not isinstance(infer_cfg.animal_models[name].model_path, str):
-            for i in range(len(infer_cfg.animal_models[name].model_path)):
-                infer_cfg.animal_models[name].model_path[i] = infer_cfg.animal_models[name].model_path[i].replace(
-                    "./checkpoints",
-                    checkpoints_dir)
-                if not os.path.exists(infer_cfg.animal_models[name].model_path[i]) and not os.path.exists(
-                        infer_cfg.animal_models[name].model_path[i][:-4] + ".onnx"):
-                    return False
-        else:
-            infer_cfg.animal_models[name].model_path = infer_cfg.animal_models[name].model_path.replace("./checkpoints",
-                                                                                                        checkpoints_dir)
-            if not os.path.exists(infer_cfg.animal_models[name].model_path) and not os.path.exists(
-                    infer_cfg.animal_models[name].model_path[:-4] + ".onnx"):
-                return False
-
-    # XPOSE
-    xpose_model_path = os.path.join(checkpoints_dir, "liveportrait_animal_onnx/xpose.pth")
-    if not os.path.exists(xpose_model_path):
-        return False
-    embeddings_cache_9_path = os.path.join(checkpoints_dir, "liveportrait_animal_onnx/clip_embedding_9.pkl")
-    if not os.path.exists(embeddings_cache_9_path):
-        return False
-    embeddings_cache_68_path = os.path.join(checkpoints_dir, "liveportrait_animal_onnx/clip_embedding_68.pkl")
-    if not os.path.exists(embeddings_cache_68_path):
-        return False
-    return ret
-
-
-def convert_onnx_to_trt_models(infer_cfg):
-    ret = True
-    for name in infer_cfg.models:
-        if not isinstance(infer_cfg.models[name].model_path, str):
-            for i in range(len(infer_cfg.models[name].model_path)):
-                trt_path = infer_cfg.models[name].model_path[i]
-                onnx_path = trt_path[:-4] + ".onnx"
-                if not os.path.exists(trt_path):
-                    convert_cmd = f"python scripts/onnx2trt.py -o {onnx_path}"
-                    logger_f.info(f"convert onnx model: {onnx_path}")
-                    result = subprocess.run(convert_cmd, shell=True, check=True)
-                    # 检查结果
-                    if result.returncode == 0:
-                        logger_f.info(f"convert onnx model: {onnx_path} successful")
-                    else:
-                        logger_f.error(f"convert onnx model: {onnx_path} failed")
+            else:
+                for i in range(len(model_path)):
+                    model_path[i] = resolve_model_path(model_path[i])
+                    if not os.path.exists(model_path[i]):
                         return False
-        else:
-            trt_path = infer_cfg.models[name].model_path
-            onnx_path = trt_path[:-4] + ".onnx"
-            if not os.path.exists(trt_path):
-                convert_cmd = f"python scripts/onnx2trt.py -o {onnx_path}"
-                logger_f.info(f"convert onnx model: {onnx_path}")
-                result = subprocess.run(convert_cmd, shell=True, check=True)
-                # 检查结果
-                if result.returncode == 0:
-                    logger_f.info(f"convert onnx model: {onnx_path} successful")
-                else:
-                    logger_f.error(f"convert onnx model: {onnx_path} failed")
-                    return False
+        return True
 
-    for name in infer_cfg.animal_models:
-        if not isinstance(infer_cfg.animal_models[name].model_path, str):
-            for i in range(len(infer_cfg.animal_models[name].model_path)):
-                trt_path = infer_cfg.animal_models[name].model_path[i]
-                onnx_path = trt_path[:-4] + ".onnx"
-                if not os.path.exists(trt_path):
-                    convert_cmd = f"python scripts/onnx2trt.py -o {onnx_path}"
-                    logger_f.info(f"convert onnx model: {onnx_path}")
-                    result = subprocess.run(convert_cmd, shell=True, check=True)
-                    # 检查结果
-                    if result.returncode == 0:
-                        logger_f.info(f"convert onnx model: {onnx_path} successful")
-                    else:
-                        logger_f.error(f"convert onnx model: {onnx_path} failed")
-                        return False
-        else:
-            trt_path = infer_cfg.animal_models[name].model_path
-            onnx_path = trt_path[:-4] + ".onnx"
-            if not os.path.exists(trt_path):
-                convert_cmd = f"python scripts/onnx2trt.py -o {onnx_path}"
-                logger_f.info(f"convert onnx model: {onnx_path}")
-                result = subprocess.run(convert_cmd, shell=True, check=True)
-                # 检查结果
-                if result.returncode == 0:
-                    logger_f.info(f"convert onnx model: {onnx_path} successful")
-                else:
-                    logger_f.error(f"convert onnx model: {onnx_path} failed")
-                    return False
-    return ret
+    if not check_group(infer_cfg.models):
+        return False
+    if not check_group(infer_cfg.animal_models):
+        return False
+
+    animal_xpose = infer_cfg.get("animal_xpose", None)
+    if animal_xpose is not None:
+        animal_xpose.model_path = resolve_model_path(animal_xpose.model_path)
+        if not os.path.exists(animal_xpose.model_path):
+            return False
+        animal_xpose.embeddings_cache_path = resolve_model_path(animal_xpose.embeddings_cache_path)
+        for suffix in ("_9.pkl", "_68.pkl"):
+            if not os.path.exists(f"{animal_xpose.embeddings_cache_path}{suffix}"):
+                return False
+    return True
+
+
+def download_runtime_checkpoints(infer_cfg):
+    repo_id = os.environ.get("FLIP_MLX_WEIGHTS_REPO", DEFAULT_MLX_WEIGHTS_REPO)
+    revision = os.environ.get("FLIP_MLX_WEIGHTS_REVISION")
+    download_script = os.path.join(project_dir, "scripts", "download_mlx_weights.py")
+    download_cmd = [
+        sys.executable,
+        download_script,
+        "--repo-id",
+        repo_id,
+        "--checkpoints-dir",
+        checkpoints_dir,
+    ]
+    if revision:
+        download_cmd.extend(["--revision", revision])
+    if infer_cfg.get("animal_xpose", None) is not None:
+        download_cmd.append("--include-animal-xpose")
+
+    logger_f.info(f"download MLX runtime assets: {shlex.join(download_cmd)}")
+    subprocess.run(download_cmd, check=True)
+    logger_f.info(f"Download checkpoints to {checkpoints_dir} successful")
 
 
 @app.on_event("startup")
 async def startup_event():
     global pipe
-    # default use trt model
-    cfg_file = os.path.join(project_dir, "configs/trt_infer.yaml")
+    cfg_file = os.path.join(project_dir, "configs/mlx_infer.yaml")
     infer_cfg = OmegaConf.load(cfg_file)
     checkpoints_exist = check_all_checkpoints_exist(infer_cfg)
 
-    # first: download model if not exist
+    # first: download MLX runtime assets if they do not exist
     if not checkpoints_exist:
-        download_cmd = f"huggingface-cli download warmshao/FasterLivePortrait --local-dir {checkpoints_dir}"
-        logger_f.info(f"download model: {download_cmd}")
-        result = subprocess.run(download_cmd, shell=True, check=True)
-        # 检查结果
-        if result.returncode == 0:
-            logger_f.info(f"Download checkpoints to {checkpoints_dir} successful")
-        else:
-            logger_f.error(f"Download checkpoints to {checkpoints_dir} failed")
-            exit(1)
-    # second: convert onnx model to trt
-    convert_ret = convert_onnx_to_trt_models(infer_cfg)
-    if not convert_ret:
-        logger_f.error(f"convert onnx model to trt failed")
-        exit(1)
-
+        try:
+            download_runtime_checkpoints(infer_cfg)
+        except subprocess.CalledProcessError as exc:
+            logger_f.error(f"Download checkpoints to {checkpoints_dir} failed: {exc}")
+            raise
+        if not check_all_checkpoints_exist(infer_cfg):
+            raise RuntimeError(f"Downloaded assets are incomplete in {checkpoints_dir}")
     infer_cfg.infer_params.flag_pasteback = True
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=True)
 
 
 def run_with_video(source_image_path, driving_video_path, save_dir):
-    global pipe
     ret = pipe.prepare_source(source_image_path, realtime=False)
     if not ret:
         logger_f.warning(f"no face in {source_image_path}! exit!")
@@ -243,18 +183,18 @@ def run_with_video(source_image_path, driving_video_path, save_dir):
     if video_has_audio(driving_video_path):
         vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
         subprocess.call(
-            [FFMPEG, "-i", vsave_crop_path, "-i", driving_video_path,
+            [FFMPEG, "-y", "-i", vsave_crop_path, "-i", driving_video_path,
              "-b:v", "10M", "-c:v",
              "libx264", "-map", "0:v", "-map", "1:a",
              "-c:a", "aac",
-             "-pix_fmt", "yuv420p", vsave_crop_path_new, "-y", "-shortest"])
+             "-pix_fmt", "yuv420p", "-shortest", vsave_crop_path_new])
         vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
         subprocess.call(
-            [FFMPEG, "-i", vsave_org_path, "-i", driving_video_path,
+            [FFMPEG, "-y", "-i", vsave_org_path, "-i", driving_video_path,
              "-b:v", "10M", "-c:v",
              "libx264", "-map", "0:v", "-map", "1:a",
              "-c:a", "aac",
-             "-pix_fmt", "yuv420p", vsave_org_path_new, "-y", "-shortest"])
+             "-pix_fmt", "yuv420p", "-shortest", vsave_org_path_new])
 
         logger_f.info(vsave_crop_path_new)
         logger_f.info(vsave_org_path_new)
@@ -281,7 +221,6 @@ def run_with_video(source_image_path, driving_video_path, save_dir):
 
 
 def run_with_pkl(source_image_path, driving_pickle_path, save_dir):
-    global pipe
     ret = pipe.prepare_source(source_image_path, realtime=False)
     if not ret:
         logger_f.warning(f"no face in {source_image_path}! exit!")
@@ -396,7 +335,6 @@ async def upload_files(
         driving_smooth_observation_variance=driving_smooth_observation_variance
     )
 
-    global pipe
     pipe.init_vars()
     if infer_params.flag_is_animal != pipe.is_animal:
         pipe.init_models(is_animal=infer_params.flag_is_animal)
@@ -417,7 +355,7 @@ async def upload_files(
         'dri_vy_ratio': infer_params.vy_ratio_crop_driving_video,
     }
     # update config from user input
-    update_ret = pipe.update_cfg(args_user)
+    pipe.update_cfg(args_user)
 
     # 保存 source_image 到指定目录
     temp_dir = os.path.join(result_dir, f"temp-{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")

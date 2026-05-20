@@ -97,8 +97,243 @@ _KERNEL_SRC_TMPL = """
 """
 
 
+_KERNEL_TO_2D_CHANNELS_SRC_TMPL = """
+    uint idx = thread_position_in_grid.x;
+    int N  = (int)input_shape[0];
+    int D  = (int)input_shape[1];
+    int H  = (int)input_shape[2];
+    int W  = (int)input_shape[3];
+    int C  = (int)input_shape[4];
+    int Do = (int)grid_shape[1];
+    int Ho = (int)grid_shape[2];
+    int Wo = (int)grid_shape[3];
+    int CD = C * Do;
+    int total = N * Ho * Wo * CD;
+    if ((int)idx >= total) return;
+
+    int cd = (int)idx % CD;
+    int rem = (int)idx / CD;
+    int wo_ = rem % Wo;
+    rem /= Wo;
+    int ho_ = rem % Ho;
+    int n = rem / Ho;
+    int do_ = cd % Do;
+    int c = cd / Do;
+
+    int g_base = (((n * Do + do_) * Ho + ho_) * Wo + wo_) * 3;
+    float gx = (float)grid[g_base + 0];
+    float gy = (float)grid[g_base + 1];
+    float gz = (float)grid[g_base + 2];
+
+    float x, y, z;
+    if (ALIGN_CORNERS) {
+        x = (gx + 1.0f) * (float)(W - 1) * 0.5f;
+        y = (gy + 1.0f) * (float)(H - 1) * 0.5f;
+        z = (gz + 1.0f) * (float)(D - 1) * 0.5f;
+    } else {
+        x = ((gx + 1.0f) * (float)W - 1.0f) * 0.5f;
+        y = ((gy + 1.0f) * (float)H - 1.0f) * 0.5f;
+        z = ((gz + 1.0f) * (float)D - 1.0f) * 0.5f;
+    }
+
+    int x0 = (int)metal::floor(x), y0 = (int)metal::floor(y), z0 = (int)metal::floor(z);
+    int x1 = x0 + 1,                y1 = y0 + 1,                z1 = z0 + 1;
+    float wx = x - (float)x0;
+    float wy = y - (float)y0;
+    float wz = z - (float)z0;
+
+    int DHWC = D * H * W * C;
+    int HWC  = H * W * C;
+    int WC   = W * C;
+    int n_off = n * DHWC;
+
+    auto fetch = [&](int zi, int yi, int xi) {
+        if (zi < 0 || zi >= D || yi < 0 || yi >= H || xi < 0 || xi >= W) return 0.0f;
+        int off = n_off + zi * HWC + yi * WC + xi * C + c;
+        return (float)input[off];
+    };
+
+    float v000 = fetch(z0, y0, x0);
+    float v001 = fetch(z0, y0, x1);
+    float v010 = fetch(z0, y1, x0);
+    float v011 = fetch(z0, y1, x1);
+    float v100 = fetch(z1, y0, x0);
+    float v101 = fetch(z1, y0, x1);
+    float v110 = fetch(z1, y1, x0);
+    float v111 = fetch(z1, y1, x1);
+
+    float c00 = v000 * (1.0f - wx) + v001 * wx;
+    float c01 = v010 * (1.0f - wx) + v011 * wx;
+    float c10 = v100 * (1.0f - wx) + v101 * wx;
+    float c11 = v110 * (1.0f - wx) + v111 * wx;
+    float c0 = c00 * (1.0f - wy) + c01 * wy;
+    float c1 = c10 * (1.0f - wy) + c11 * wy;
+    output[idx] = (T)(c0 * (1.0f - wz) + c1 * wz);
+"""
+
+
+_KERNEL_TO_2D_CHANNELS_C4_SRC_TMPL = """
+    uint idx = thread_position_in_grid.x;
+    int N  = (int)input_shape[0];
+    int D  = (int)input_shape[1];
+    int H  = (int)input_shape[2];
+    int W  = (int)input_shape[3];
+    int C  = (int)input_shape[4];
+    int Do = (int)grid_shape[1];
+    int Ho = (int)grid_shape[2];
+    int Wo = (int)grid_shape[3];
+    int C4 = C / 4;
+    int total = N * Ho * Wo * Do * C4;
+    if ((int)idx >= total) return;
+
+    int c4 = (int)idx % C4;
+    int rem = (int)idx / C4;
+    int do_ = rem % Do;
+    rem /= Do;
+    int wo_ = rem % Wo;
+    rem /= Wo;
+    int ho_ = rem % Ho;
+    int n = rem / Ho;
+    int c0 = c4 * 4;
+
+    int g_base = (((n * Do + do_) * Ho + ho_) * Wo + wo_) * 3;
+    float gx = (float)grid[g_base + 0];
+    float gy = (float)grid[g_base + 1];
+    float gz = (float)grid[g_base + 2];
+
+    float x, y, z;
+    if (ALIGN_CORNERS) {
+        x = (gx + 1.0f) * (float)(W - 1) * 0.5f;
+        y = (gy + 1.0f) * (float)(H - 1) * 0.5f;
+        z = (gz + 1.0f) * (float)(D - 1) * 0.5f;
+    } else {
+        x = ((gx + 1.0f) * (float)W - 1.0f) * 0.5f;
+        y = ((gy + 1.0f) * (float)H - 1.0f) * 0.5f;
+        z = ((gz + 1.0f) * (float)D - 1.0f) * 0.5f;
+    }
+
+    int x0 = (int)metal::floor(x), y0 = (int)metal::floor(y), z0 = (int)metal::floor(z);
+    int x1 = x0 + 1,                y1 = y0 + 1,                z1 = z0 + 1;
+    float wx = x - (float)x0;
+    float wy = y - (float)y0;
+    float wz = z - (float)z0;
+
+    int DHWC = D * H * W * C;
+    int HWC  = H * W * C;
+    int WC   = W * C;
+    int n_off = n * DHWC;
+    int out_base = (((n * Ho + ho_) * Wo + wo_) * C + c0) * Do + do_;
+
+    for (int lane = 0; lane < 4; ++lane) {
+        int c = c0 + lane;
+        auto fetch = [&](int zi, int yi, int xi) {
+            if (zi < 0 || zi >= D || yi < 0 || yi >= H || xi < 0 || xi >= W) return 0.0f;
+            int off = n_off + zi * HWC + yi * WC + xi * C + c;
+            return (float)input[off];
+        };
+
+        float v000 = fetch(z0, y0, x0);
+        float v001 = fetch(z0, y0, x1);
+        float v010 = fetch(z0, y1, x0);
+        float v011 = fetch(z0, y1, x1);
+        float v100 = fetch(z1, y0, x0);
+        float v101 = fetch(z1, y0, x1);
+        float v110 = fetch(z1, y1, x0);
+        float v111 = fetch(z1, y1, x1);
+
+        float c00 = v000 * (1.0f - wx) + v001 * wx;
+        float c01 = v010 * (1.0f - wx) + v011 * wx;
+        float c10 = v100 * (1.0f - wx) + v101 * wx;
+        float c11 = v110 * (1.0f - wx) + v111 * wx;
+        float cy0 = c00 * (1.0f - wy) + c01 * wy;
+        float cy1 = c10 * (1.0f - wy) + c11 * wy;
+        output[out_base + lane * Do] = (T)(cy0 * (1.0f - wz) + cy1 * wz);
+    }
+"""
+
+
+_KERNEL_SPARSE_MOTIONS_SRC_TMPL = """
+    uint idx = thread_position_in_grid.x;
+    int N  = (int)input_shape[0];
+    int D  = (int)input_shape[1];
+    int H  = (int)input_shape[2];
+    int W  = (int)input_shape[3];
+    int C  = (int)input_shape[4];
+    int K  = (int)grid_shape[1];
+    int Do = (int)grid_shape[2];
+    int Ho = (int)grid_shape[3];
+    int Wo = (int)grid_shape[4];
+    int total = N * K * Do * Ho * Wo * C;
+    if ((int)idx >= total) return;
+
+    int c = (int)idx % C;
+    int rem = (int)idx / C;
+    int wo_ = rem % Wo;
+    rem /= Wo;
+    int ho_ = rem % Ho;
+    rem /= Ho;
+    int do_ = rem % Do;
+    rem /= Do;
+    int k = rem % K;
+    int n = rem / K;
+
+    int g_base = ((((n * K + k) * Do + do_) * Ho + ho_) * Wo + wo_) * 3;
+    float gx = (float)grid[g_base + 0];
+    float gy = (float)grid[g_base + 1];
+    float gz = (float)grid[g_base + 2];
+
+    float x, y, z;
+    if (ALIGN_CORNERS) {
+        x = (gx + 1.0f) * (float)(W - 1) * 0.5f;
+        y = (gy + 1.0f) * (float)(H - 1) * 0.5f;
+        z = (gz + 1.0f) * (float)(D - 1) * 0.5f;
+    } else {
+        x = ((gx + 1.0f) * (float)W - 1.0f) * 0.5f;
+        y = ((gy + 1.0f) * (float)H - 1.0f) * 0.5f;
+        z = ((gz + 1.0f) * (float)D - 1.0f) * 0.5f;
+    }
+
+    int x0 = (int)metal::floor(x), y0 = (int)metal::floor(y), z0 = (int)metal::floor(z);
+    int x1 = x0 + 1,                y1 = y0 + 1,                z1 = z0 + 1;
+    float wx = x - (float)x0;
+    float wy = y - (float)y0;
+    float wz = z - (float)z0;
+
+    int DHWC = D * H * W * C;
+    int HWC  = H * W * C;
+    int WC   = W * C;
+    int n_off = n * DHWC;
+
+    auto fetch = [&](int zi, int yi, int xi) {
+        if (zi < 0 || zi >= D || yi < 0 || yi >= H || xi < 0 || xi >= W) return 0.0f;
+        int off = n_off + zi * HWC + yi * WC + xi * C + c;
+        return (float)input[off];
+    };
+
+    float v000 = fetch(z0, y0, x0);
+    float v001 = fetch(z0, y0, x1);
+    float v010 = fetch(z0, y1, x0);
+    float v011 = fetch(z0, y1, x1);
+    float v100 = fetch(z1, y0, x0);
+    float v101 = fetch(z1, y0, x1);
+    float v110 = fetch(z1, y1, x0);
+    float v111 = fetch(z1, y1, x1);
+
+    float c00 = v000 * (1.0f - wx) + v001 * wx;
+    float c01 = v010 * (1.0f - wx) + v011 * wx;
+    float c10 = v100 * (1.0f - wx) + v101 * wx;
+    float c11 = v110 * (1.0f - wx) + v111 * wx;
+    float c0 = c00 * (1.0f - wy) + c01 * wy;
+    float c1 = c10 * (1.0f - wy) + c11 * wy;
+    output[idx] = (T)(c0 * (1.0f - wz) + c1 * wz);
+"""
+
+
 # Cached metal kernel objects keyed by (align_corners,)
 _METAL_KERNELS = {}
+_METAL_TO_2D_CHANNELS_KERNELS = {}
+_METAL_TO_2D_CHANNELS_C4_KERNELS = {}
+_METAL_SPARSE_MOTIONS_KERNELS = {}
 
 
 def _get_metal_kernel(align_corners: bool):
@@ -112,6 +347,45 @@ def _get_metal_kernel(align_corners: bool):
             source=src,
         )
     return _METAL_KERNELS[key]
+
+
+def _get_metal_to_2d_channels_kernel(align_corners: bool):
+    key = bool(align_corners)
+    if key not in _METAL_TO_2D_CHANNELS_KERNELS:
+        src = _KERNEL_TO_2D_CHANNELS_SRC_TMPL.replace("ALIGN_CORNERS", "1" if key else "0")
+        _METAL_TO_2D_CHANNELS_KERNELS[key] = mx.fast.metal_kernel(
+            name=f"grid_sample_3d_to_2d_channels_{'ac' if key else 'noac'}",
+            input_names=["input", "grid"],
+            output_names=["output"],
+            source=src,
+        )
+    return _METAL_TO_2D_CHANNELS_KERNELS[key]
+
+
+def _get_metal_to_2d_channels_c4_kernel(align_corners: bool):
+    key = bool(align_corners)
+    if key not in _METAL_TO_2D_CHANNELS_C4_KERNELS:
+        src = _KERNEL_TO_2D_CHANNELS_C4_SRC_TMPL.replace("ALIGN_CORNERS", "1" if key else "0")
+        _METAL_TO_2D_CHANNELS_C4_KERNELS[key] = mx.fast.metal_kernel(
+            name=f"grid_sample_3d_to_2d_channels_c4_{'ac' if key else 'noac'}",
+            input_names=["input", "grid"],
+            output_names=["output"],
+            source=src,
+        )
+    return _METAL_TO_2D_CHANNELS_C4_KERNELS[key]
+
+
+def _get_metal_sparse_motions_kernel(align_corners: bool):
+    key = bool(align_corners)
+    if key not in _METAL_SPARSE_MOTIONS_KERNELS:
+        src = _KERNEL_SPARSE_MOTIONS_SRC_TMPL.replace("ALIGN_CORNERS", "1" if key else "0")
+        _METAL_SPARSE_MOTIONS_KERNELS[key] = mx.fast.metal_kernel(
+            name=f"grid_sample_3d_sparse_motions_{'ac' if key else 'noac'}",
+            input_names=["input", "grid"],
+            output_names=["output"],
+            source=src,
+        )
+    return _METAL_SPARSE_MOTIONS_KERNELS[key]
 
 
 def _grid_sample_3d_metal(input: mx.array, grid: mx.array, *, align_corners: bool) -> mx.array:
@@ -130,6 +404,92 @@ def _grid_sample_3d_metal(input: mx.array, grid: mx.array, *, align_corners: boo
         output_dtypes=[input.dtype],
     )
     return outputs[0]
+
+
+def grid_sample_3d_to_2d_channels(
+    input: mx.array,
+    grid: mx.array,
+    *,
+    align_corners: bool = False,
+) -> mx.array:
+    """Sample NDHWC volume and write directly as NHW(C*D).
+
+    This is equivalent to ``grid_sample_3d(...).transpose(0, 2, 3, 4, 1)``
+    followed by reshaping the last two axes as ``C * D``.
+    """
+    if input.ndim != 5 or grid.ndim != 5 or grid.shape[-1] != 3:
+        raise ValueError(
+            f"expected input (N,D,H,W,C) and grid (N,Do,Ho,Wo,3); got "
+            f"{tuple(input.shape)} and {tuple(grid.shape)}"
+        )
+    n, _, _, _, c = input.shape
+    _, do, ho, wo, _ = grid.shape
+    total = n * ho * wo * c * do
+    kernel = _get_metal_to_2d_channels_kernel(align_corners)
+    return kernel(
+        inputs=[input, grid],
+        template=[("T", input.dtype)],
+        grid=((total + 255) // 256 * 256, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(n, ho, wo, c * do)],
+        output_dtypes=[input.dtype],
+    )[0]
+
+
+def grid_sample_3d_to_2d_channels_c4(
+    input: mx.array,
+    grid: mx.array,
+    *,
+    align_corners: bool = False,
+) -> mx.array:
+    """Sample NDHWC volume as NHW(C*D), computing four channels per thread."""
+    if input.ndim != 5 or grid.ndim != 5 or grid.shape[-1] != 3:
+        raise ValueError(
+            f"expected input (N,D,H,W,C) and grid (N,Do,Ho,Wo,3); got "
+            f"{tuple(input.shape)} and {tuple(grid.shape)}"
+        )
+    n, _, _, _, c = input.shape
+    if c % 4 != 0:
+        return grid_sample_3d_to_2d_channels(input, grid, align_corners=align_corners)
+    _, do, ho, wo, _ = grid.shape
+    total = n * ho * wo * do * (c // 4)
+    kernel = _get_metal_to_2d_channels_c4_kernel(align_corners)
+    return kernel(
+        inputs=[input, grid],
+        template=[("T", input.dtype)],
+        grid=((total + 255) // 256 * 256, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(n, ho, wo, c * do)],
+        output_dtypes=[input.dtype],
+    )[0]
+
+
+def grid_sample_3d_sparse_motions(
+    input: mx.array,
+    grid: mx.array,
+    *,
+    align_corners: bool = False,
+) -> mx.array:
+    """Sample one NDHWC feature volume with an NKDHW3 sparse-motion grid."""
+    if input.ndim != 5 or grid.ndim != 6 or grid.shape[-1] != 3:
+        raise ValueError(
+            f"expected input (N,D,H,W,C) and grid (N,K,D,H,W,3); got "
+            f"{tuple(input.shape)} and {tuple(grid.shape)}"
+        )
+    if input.shape[0] != grid.shape[0]:
+        raise ValueError(f"incompatible batch shapes: {tuple(input.shape)} and {tuple(grid.shape)}")
+    n, _, _, _, c = input.shape
+    _, k, do, ho, wo, _ = grid.shape
+    total = n * k * do * ho * wo * c
+    kernel = _get_metal_sparse_motions_kernel(align_corners)
+    return kernel(
+        inputs=[input, grid],
+        template=[("T", input.dtype)],
+        grid=((total + 255) // 256 * 256, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(n, k, do, ho, wo, c)],
+        output_dtypes=[input.dtype],
+    )[0]
 
 
 def _grid_sample_3d_gather(input: mx.array, grid: mx.array, *, align_corners: bool) -> mx.array:

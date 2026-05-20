@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""MLX motion_extractor wrapper providing the same predict() interface as the
-existing MotionExtractorModel (ONNX/TRT)."""
+"""MLX motion_extractor wrapper for the LivePortrait pipeline."""
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 import mlx.core as mx
@@ -22,10 +23,7 @@ def _headpose_pred_to_degree_np(pred):
 
 
 class MlxMotionExtractorModel:
-    """Reproduces MotionExtractorModel's predict() contract: takes a
-    uint8 (H, W, 3) image and returns a tuple (pitch, yaw, roll, t, exp,
-    scale, kp) of numpy arrays in the same shapes the rest of the pipeline
-    expects."""
+    """Takes a uint8 RGB image and returns motion arrays used by the pipeline."""
 
     def __init__(self, **kwargs):
         self.predict_type = "mlx"
@@ -39,16 +37,26 @@ class MlxMotionExtractorModel:
         self.model.eval()
         _cast_params(self.model, self.dtype)
         mx.eval(self.model.parameters())
+        if kwargs.get("compile_model", None) is None:
+            compile_model = os.environ.get("FLP_MLX_COMPILE_MOTION", "1") == "1"
+        else:
+            compile_model = kwargs.get("compile_model", False)
+        if compile_model:
+            model = self.model
+            self._model_fn = mx.compile(lambda x: model(x))
+        else:
+            self._model_fn = self.model
 
     def predict(self, *data):
         img = np.asarray(data[0])
         if img.dtype != np.uint8:
             img = img.astype(np.uint8)
-        x = img.astype(np.float32) / 255.0  # (H, W, 3)
-        x_mx = mx.array(x[None]).astype(self.dtype)  # (1, H, W, 3) NHWC
-        out = self.model(x_mx)
+        x_mx = (mx.array(img[None]).astype(mx.float32) / 255.0).astype(self.dtype)  # (1, H, W, 3) NHWC
+        out = self._model_fn(x_mx)
         keys = ("pitch", "yaw", "roll", "t", "exp", "scale", "kp")
-        cpu = {k: np.array(out[k].astype(mx.float32), dtype=np.float32) for k in keys}
+        mx_out = [out[k].astype(mx.float32) for k in keys]
+        mx.eval(mx_out)
+        cpu = {k: np.array(v, dtype=np.float32) for k, v in zip(keys, mx_out)}
         if self.flag_refine_info:
             bs = cpu["kp"].shape[0]
             for k in ("pitch", "yaw", "roll"):

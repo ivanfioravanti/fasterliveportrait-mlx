@@ -5,6 +5,7 @@ face detectoin and alignment using XPose
 """
 
 import os
+import io
 import pickle
 import torch
 import numpy as np
@@ -29,18 +30,55 @@ from src.models.XPose.util import box_ops
 from src.models.XPose.util.config import Config
 
 
+class TorchCPUUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "torch.storage" and name == "_load_from_bytes":
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu", weights_only=False)
+        return super().find_class(module, name)
+
+
+def load_pickle_tensors_on_cpu(path):
+    with open(path, "rb") as f:
+        return TorchCPUUnpickler(f).load()
+
+
+def move_tree_to_device(value, device):
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, tuple):
+        return tuple(move_tree_to_device(x, device) for x in value)
+    if isinstance(value, list):
+        return [move_tree_to_device(x, device) for x in value]
+    if isinstance(value, dict):
+        return {k: move_tree_to_device(v, device) for k, v in value.items()}
+    return value
+
+
 class XPoseRunner(object):
     def __init__(self, model_config_path, model_checkpoint_path, embeddings_cache_path=None, cpu_only=False, **kwargs):
         self.device_id = kwargs.get("device_id", 0)
-        self.flag_use_half_precision = kwargs.get("flag_use_half_precision", True)
-        self.device = f"cuda:{self.device_id}" if not cpu_only else "cpu"
+        if cpu_only:
+            self.device = "cpu"
+        elif torch.cuda.is_available():
+            self.device = f"cuda:{self.device_id}"
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+        else:
+            self.device = "cpu"
+        self.flag_use_half_precision = kwargs.get("flag_use_half_precision", True) and self.device.startswith("cuda")
         self.model = self.load_animal_model(model_config_path, model_checkpoint_path, self.device)
         # Load cached embeddings if available
         try:
-            with open(f'{embeddings_cache_path}_9.pkl', 'rb') as f:
-                self.ins_text_embeddings_9, self.kpt_text_embeddings_9 = pickle.load(f)
-            with open(f'{embeddings_cache_path}_68.pkl', 'rb') as f:
-                self.ins_text_embeddings_68, self.kpt_text_embeddings_68 = pickle.load(f)
+            self.ins_text_embeddings_9, self.kpt_text_embeddings_9 = load_pickle_tensors_on_cpu(
+                f'{embeddings_cache_path}_9.pkl'
+            )
+            self.ins_text_embeddings_68, self.kpt_text_embeddings_68 = load_pickle_tensors_on_cpu(
+                f'{embeddings_cache_path}_68.pkl'
+            )
+            self.ins_text_embeddings_9 = move_tree_to_device(self.ins_text_embeddings_9, self.device)
+            self.kpt_text_embeddings_9 = move_tree_to_device(self.kpt_text_embeddings_9, self.device)
+            self.ins_text_embeddings_68 = move_tree_to_device(self.ins_text_embeddings_68, self.device)
+            self.kpt_text_embeddings_68 = move_tree_to_device(self.kpt_text_embeddings_68, self.device)
             print("Loaded cached embeddings from file.")
         except Exception:
             raise ValueError("Could not load clip embeddings from file, please check your file path.")
@@ -49,7 +87,7 @@ class XPoseRunner(object):
         args = Config.fromfile(model_config_path)
         args.device = device
         model = build_model(args)
-        checkpoint = torch.load(model_checkpoint_path, map_location=lambda storage, loc: storage)
+        checkpoint = torch.load(model_checkpoint_path, map_location=lambda storage, loc: storage, weights_only=False)
         load_res = model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
         model.eval()
         return model
@@ -90,7 +128,7 @@ class XPoseRunner(object):
         image = image.to(self.device)
 
         with torch.no_grad():
-            with torch.autocast(device_type=self.device[:4], dtype=torch.float16, enabled=self.flag_use_half_precision):
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.flag_use_half_precision):
                 outputs = self.model(image[None], [target])
 
         logits = outputs["pred_logits"].sigmoid()[0]

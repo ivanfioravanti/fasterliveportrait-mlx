@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+import os
 
 import mlx.core as mx
 import mlx.nn as nn
+
+
+_CONV3D_BACKEND = os.environ.get("FLP_MLX_CONV3D_BACKEND", "native")
 
 
 class BatchNorm3d(nn.Module):
@@ -25,8 +29,33 @@ class BatchNorm3d(nn.Module):
         self.bias = mx.zeros((num_features,))
         self.running_mean = mx.zeros((num_features,))
         self.running_var = mx.ones((num_features,))
+        self._frozen_dtype = None
+        self._frozen_scale = None
+        self._frozen_shift = None
+
+    def freeze(self, dtype=None):
+        """Precompute inference affine terms after checkpoint loading/casting."""
+        target_dtype = dtype or self.weight.dtype
+        w32 = self.weight.astype(mx.float32)
+        b32 = self.bias.astype(mx.float32)
+        m32 = self.running_mean.astype(mx.float32)
+        v32 = self.running_var.astype(mx.float32)
+        scale = w32 * mx.rsqrt(v32 + self.eps)
+        shift = b32 - m32 * scale
+        self._frozen_scale = scale.astype(target_dtype)
+        self._frozen_shift = shift.astype(target_dtype)
+        self._frozen_dtype = target_dtype
+        mx.eval(self._frozen_scale, self._frozen_shift)
 
     def __call__(self, x: mx.array) -> mx.array:
+        if (
+            self._frozen_scale is not None
+            and self._frozen_shift is not None
+            and self._frozen_dtype is not None
+            and self._frozen_dtype == x.dtype
+        ):
+            return x * self._frozen_scale + self._frozen_shift
+
         # Compute scale/shift in fp32 to keep the rsqrt and division stable
         # under fp16 inputs, then cast back to the input dtype.
         in_dtype = x.dtype
@@ -147,7 +176,7 @@ class UpBlock3d(nn.Module):
         x = mx.broadcast_to(x[:, :, :, None, :, None, :],
                             (n, d, h, 2, w, 2, c))
         x = x.reshape(n, d, h * 2, w * 2, c)
-        x = self.conv(x)
+        x = _conv3d_call(self.conv, x)
         x = self.norm(x)
         x = nn.relu(x)
         return x
@@ -166,10 +195,10 @@ class ResBlock3d(nn.Module):
     def __call__(self, x):
         out = self.norm1(x)
         out = nn.relu(out)
-        out = self.conv1(out)
+        out = _conv3d_call(self.conv1, out)
         out = self.norm2(out)
         out = nn.relu(out)
-        out = self.conv2(out)
+        out = _conv3d_call(self.conv2, out)
         return out + x
 
 
@@ -215,7 +244,7 @@ class Decoder(nn.Module):
             out = blk(out)
             skip = x_list[-(i + 2)]
             out = mx.concatenate([out, skip], axis=-1)
-        out = self.conv(out)
+        out = _conv3d_call(self.conv, out)
         out = self.norm(out)
         return nn.relu(out)
 
@@ -231,7 +260,7 @@ class Hourglass(nn.Module):
         return self.decoder(self.encoder(x))
 
 
-def conv3d_via_2d(x: mx.array, weight: mx.array, bias: mx.array, padding: int) -> mx.array:
+def conv3d_via_2d(x: mx.array, weight: mx.array, bias: mx.array | None, padding: int) -> mx.array:
     """Conv3d implemented as a series of 2D convs along the depth axis.
 
     For Conv3d configurations dominated by spatial work (K=7 here), this is
@@ -257,7 +286,35 @@ def conv3d_via_2d(x: mx.array, weight: mx.array, bias: mx.array, padding: int) -
         y = mx.conv2d(x_2d, w_2d, padding=padding)
         y = y.reshape(N, D, H, W, OC)
         out = y if out is None else (out + y)
-    return out + bias
+    return out + bias if bias is not None else out
+
+
+def _conv3d_auto_use_2d(x: mx.array, weight: mx.array, padding: int) -> bool:
+    """Heuristic for Conv3d shapes where depth-sliced Conv2d won in benchmarks."""
+    if padding != 1 or weight.ndim != 5 or weight.shape[1:4] != (3, 3, 3):
+        return False
+    _, _, h, w, ic = x.shape
+    oc = weight.shape[0]
+    if h != w:
+        return False
+    # DenseMotion hourglass shapes where conv3d_via_2d measured faster.
+    return (
+        (h == 16 and ic == 128 and oc == 256)
+        or (h == 16 and ic == 512 and oc == 128)
+        or (h == 32 and ic == 256 and oc == 64)
+    )
+
+
+def _conv3d_call(conv: nn.Conv3d, x: mx.array) -> mx.array:
+    padding = conv.padding[0] if isinstance(conv.padding, tuple) else conv.padding
+    if _CONV3D_BACKEND == "2d" or (
+        _CONV3D_BACKEND == "auto" and _conv3d_auto_use_2d(x, conv.weight, padding)
+    ):
+        return conv3d_via_2d(x, conv.weight, getattr(conv, "bias", None), padding=padding)
+    return conv(x)
+
+
+_COORDINATE_GRID_CACHE = {}
 
 
 def make_coordinate_grid(spatial_size, dtype=mx.float32):
@@ -265,14 +322,48 @@ def make_coordinate_grid(spatial_size, dtype=mx.float32):
 
     Order of last axis is (x, y, z) to match upstream LivePortrait.
     """
-    d, h, w = spatial_size
+    d, h, w = (int(v) for v in spatial_size)
+    key = (d, h, w, str(dtype))
+    cached = _COORDINATE_GRID_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     x = (mx.arange(w, dtype=dtype) / max(w - 1, 1)) * 2.0 - 1.0
     y = (mx.arange(h, dtype=dtype) / max(h - 1, 1)) * 2.0 - 1.0
     z = (mx.arange(d, dtype=dtype) / max(d - 1, 1)) * 2.0 - 1.0
     xx = mx.broadcast_to(x.reshape(1, 1, w), (d, h, w))
     yy = mx.broadcast_to(y.reshape(1, h, 1), (d, h, w))
     zz = mx.broadcast_to(z.reshape(d, 1, 1), (d, h, w))
-    return mx.stack([xx, yy, zz], axis=-1)
+    grid = mx.stack([xx, yy, zz], axis=-1)
+    mx.eval(grid)
+    _COORDINATE_GRID_CACHE[key] = grid
+    return grid
+
+
+def freeze_batch_norm_3d(module, dtype=None, _seen=None):
+    """Freeze all inference-only BatchNorm3d instances below a module."""
+    if _seen is None:
+        _seen = set()
+    obj_id = id(module)
+    if obj_id in _seen:
+        return
+    _seen.add(obj_id)
+
+    if isinstance(module, BatchNorm3d):
+        module.freeze(dtype)
+        return
+
+    if isinstance(module, dict):
+        values = module.values()
+    elif isinstance(module, (list, tuple)):
+        values = module
+    elif isinstance(module, nn.Module):
+        values = vars(module).values()
+    else:
+        return
+
+    for value in values:
+        freeze_batch_norm_3d(value, dtype=dtype, _seen=_seen)
 
 
 def kp2gaussian(kp, spatial_size, kp_variance):

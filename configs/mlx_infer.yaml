@@ -4,82 +4,91 @@ models:
     predict_type: "mlx"
     dtype: "bf16"
     model_path:
-      - "./checkpoints/liveportrait_torch/warping_module.pth"
-      - "./checkpoints/liveportrait_torch/spade_generator.pth"
+      - "./checkpoints/liveportrait_mlx/warping_module.npz"
+      - "./checkpoints/liveportrait_mlx/spade_generator.npz"
   motion_extractor:
     name: "MlxMotionExtractorModel"
     predict_type: "mlx"
     dtype: "bf16"
-    model_path: "./checkpoints/liveportrait_torch/motion_extractor.pth"
+    model_path: "./checkpoints/liveportrait_mlx/motion_extractor.npz"
   landmark:
     name: "MlxLandmarkModel"
     predict_type: "mlx"
     dtype: "fp32"  # tiny model, fp32 keeps quality and is already 2.8 ms
-    model_path: "./checkpoints/liveportrait_onnx/landmark.onnx"
+    model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
   face_analysis:
-    name: "FaceAnalysisModel"
-    predict_type: "ort"
-    model_path:
-      - "./checkpoints/liveportrait_onnx/retinaface_det_static.onnx"
-      - "./checkpoints/liveportrait_onnx/face_2dpose_106_static.onnx"
+    name: "MediaPipeFaceModel"
+    predict_type: "mp"
+    det_thresh: 0.15
+    model_path: "./checkpoints/mediapipe/face_landmarker.task"
   app_feat_extractor:
     name: "MlxAppearanceFeatureExtractorModel"
     predict_type: "mlx"
     dtype: "bf16"  # one-shot init only, keep stable
-    model_path: "./checkpoints/liveportrait_torch/appearance_feature_extractor.pth"
+    model_path: "./checkpoints/liveportrait_mlx/appearance_feature_extractor.npz"
   stitching:
-    name: "StitchingModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_onnx/stitching.onnx"
+    name: "MlxStitchingModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/stitching.npz"
   stitching_eye_retarget:
-    name: "StitchingModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_onnx/stitching_eye.onnx"
+    name: "MlxStitchingModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/stitching_eye.npz"
   stitching_lip_retarget:
-    name: "StitchingModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_onnx/stitching_lip.onnx"
+    name: "MlxStitchingModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/stitching_lip.npz"
 
 animal_models:
   warping_spade:
     name: "MlxWarpingSpadeModel"
     predict_type: "mlx"
-    dtype: "fp16"
+    dtype: "bf16"
     model_path:
-      - "./checkpoints/liveportrait_torch/warping_module.pth"
-      - "./checkpoints/liveportrait_torch/spade_generator.pth"
+      - "./checkpoints/liveportrait_animal_mlx/base_models_v1.1/warping_module.npz"
+      - "./checkpoints/liveportrait_animal_mlx/base_models_v1.1/spade_generator.npz"
   motion_extractor:
     name: "MlxMotionExtractorModel"
     predict_type: "mlx"
-    dtype: "fp16"
-    model_path: "./checkpoints/liveportrait_torch/motion_extractor.pth"
+    dtype: "bf16"
+    model_path: "./checkpoints/liveportrait_animal_mlx/base_models_v1.1/motion_extractor.npz"
   app_feat_extractor:
     name: "MlxAppearanceFeatureExtractorModel"
     predict_type: "mlx"
-    dtype: "fp16"
-    model_path: "./checkpoints/liveportrait_torch/appearance_feature_extractor.pth"
+    dtype: "bf16"
+    model_path: "./checkpoints/liveportrait_animal_mlx/base_models_v1.1/appearance_feature_extractor.npz"
   stitching:
-    name: "StitchingModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_animal_onnx/stitching.onnx"
+    name: "MlxStitchingModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/stitching.npz"
   stitching_eye_retarget:
-    name: "StitchingModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_animal_onnx/stitching_eye.onnx"
+    name: "MlxStitchingModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/stitching_eye.npz"
   stitching_lip_retarget:
-    name: "StitchingModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_animal_onnx/stitching_lip.onnx"
+    name: "MlxStitchingModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/stitching_lip.npz"
   landmark:
-    name: "LandmarkModel"
-    predict_type: "ort"
-    model_path: "./checkpoints/liveportrait_onnx/landmark.onnx"
+    name: "MlxLandmarkModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
   face_analysis:
-    name: "FaceAnalysisModel"
-    predict_type: "ort"
-    model_path:
-      - "./checkpoints/liveportrait_onnx/retinaface_det_static.onnx"
-      - "./checkpoints/liveportrait_onnx/face_2dpose_106_static.onnx"
+    name: "MediaPipeFaceModel"
+    predict_type: "mp"
+    det_thresh: 0.15
+    model_path: "./checkpoints/mediapipe/face_landmarker.task"
+
+animal_xpose:
+  model_path: "./checkpoints/liveportrait_animals/xpose.pth"
+  embeddings_cache_path: "./checkpoints/liveportrait_animals/clip_embedding/clip_embedding"
 
 joyvasa_models:
   motion_model_path: "checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese.pt"
@@ -91,13 +100,13 @@ crop_params:
   src_scale: 2.3
   src_vx_ratio: 0.0
   src_vy_ratio: -0.125
-  dri_scale: 2.2
+  dri_scale: 2.8
   dri_vx_ratio: 0.0
   dri_vy_ratio: -0.1
 
 
 infer_params:
-  flag_crop_driving_video: False
+  flag_crop_driving_video: True
   flag_normalize_lip: True
   flag_source_video_eye_retargeting: False
   flag_video_editing_head_rotation: False
@@ -108,6 +117,12 @@ infer_params:
   flag_pasteback: True
   flag_do_crop: True
   flag_do_rot: True
+  flag_auto_crop_driving_video: False
+  flag_stabilize_driving_crop: True
+  flag_lock_driving_crop_scale: True
+  flag_lock_driving_motion_scale: True
+  driving_crop_center_smoothing: 0.85
+  driving_crop_scale_smoothing: 0.98
 
   lip_normalize_threshold: 0.03
   source_video_eye_retargeting_threshold: 0.18
@@ -115,6 +130,7 @@ infer_params:
   anchor_frame: 0
   mask_crop_path: "./assets/mask_template.png"
   driving_multiplier: 1.0
+  driving_option: "expression-friendly"
   animation_region: "all"
 
   cfg_mode: "incremental"

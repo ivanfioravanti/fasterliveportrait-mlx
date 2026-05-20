@@ -1,0 +1,46 @@
+[project]
+name = "fasterliveportrait-mlx"
+version = "0.1.0"
+description = "Apple MLX port of FasterLivePortrait for Apple Silicon."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "colorama",
+    "fastapi",
+    "ffmpeg-python",
+    "gradio",
+    "huggingface-hub",
+    "insightface",
+    "kokoro>=0.3.4",
+    "mediapipe",
+    "misaki[ja]",
+    "misaki[zh]",
+    "mlx",
+    "munch",
+    "numpy",
+    "omegaconf",
+    "opencv-python",
+    "phonemizer",
+    "pydantic",
+    "scikit-image",
+    "scipy",
+    "soundfile",
+    "torch",
+    "torchaudio",
+    "torchgeometry",
+    "torchvision",
+    "transformers",
+    "uvicorn",
+]
+
+[dependency-groups]
+dev = [
+    "pyflakes",
+    "pytest",
+]
+convert = [
+    "onnx",
+]
+
+[tool.uv]
+package = false

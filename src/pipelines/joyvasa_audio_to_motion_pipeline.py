@@ -6,7 +6,6 @@
 # @FileName: joyvasa_audio_to_motion_pipeline.py
 
 import math
-import pdb
 
 import torch
 import torchaudio
@@ -105,6 +104,9 @@ class JoyVASAAudio2MotionPipeline:
 
         # generate motions
         coef_list = []
+        prev_motion_feat = None
+        prev_audio_feat = None
+        noise = None
         for i in range(0, n_subdivision):
             start_idx = i * stride
             end_idx = start_idx + self.n_motions

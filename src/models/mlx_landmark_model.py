@@ -1,17 +1,14 @@
 # -*- coding: utf-8 -*-
-"""MLX landmark model wrapper providing the same predict() interface as
-LandmarkModel (ORT). Reproduces ConvNeXt-Tiny + LayerScale + 3 heads."""
+"""MLX landmark model wrapper for exported runtime npz weights."""
 
 from __future__ import annotations
 
 import cv2
 import numpy as np
 import mlx.core as mx
-import mlx.utils as mu
 
 from src.utils.crop import crop_image, _transform_pts
 from .mlx_modules.landmark import LandmarkModel
-from .mlx_modules.landmark_weight_extract import load_landmark_from_onnx
 
 
 class MlxLandmarkModel:
@@ -22,7 +19,15 @@ class MlxLandmarkModel:
         self.dtype = _resolve_dtype(kwargs)
 
         self.model = LandmarkModel()
-        load_landmark_from_onnx(self.model, kwargs["model_path"])
+        model_path = str(kwargs["model_path"])
+        if not model_path.endswith(".npz"):
+            raise ValueError(
+                f"MlxLandmarkModel requires exported .npz weights, got {model_path}. "
+                "Run scripts/export_mlx_weights.py first."
+            )
+        from .mlx_modules.landmark_weight_extract import load_landmark_from_npz
+
+        load_landmark_from_npz(self.model, model_path)
         self.model.eval()
         _cast_params(self.model, self.dtype)
         mx.eval(self.model.parameters())

@@ -6,8 +6,6 @@
 
 import copy
 import os.path
-import pdb
-import time
 import traceback
 from PIL import Image
 import cv2
@@ -16,7 +14,7 @@ import numpy as np
 import torch
 
 from .. import models
-from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back, paste_back_pytorch
+from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back_pytorch
 from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matrix, calc_lip_close_ratio, \
     calc_eye_close_ratio, transform_keypoint, concat_feat
 from src.utils import utils
@@ -86,9 +84,12 @@ class FasterLivePortraitPipeline:
                 self.model_dict[model_name] = getattr(models, self.cfg.animal_models[model_name]["name"])(
                     **self.cfg.animal_models[model_name])
 
+            xpose_cfg = self.cfg.get("animal_xpose", {})
             xpose_config_file_path: str = make_abs_path("models/XPose/config_model/UniPose_SwinT.py")
-            xpose_ckpt_path: str = os.path.join(checkpoint_dir, "xpose.pth")
-            xpose_embedding_cache_path: str = os.path.join(checkpoint_dir, 'clip_embedding')
+            xpose_ckpt_path: str = xpose_cfg.get("model_path") or os.path.join(checkpoint_dir, "xpose.pth")
+            xpose_embedding_cache_path: str = xpose_cfg.get("embeddings_cache_path") or os.path.join(
+                checkpoint_dir, 'clip_embedding'
+            )
             self.model_dict["xpose"] = XPoseRunner(model_config_path=xpose_config_file_path,
                                                    model_checkpoint_path=xpose_ckpt_path,
                                                    embeddings_cache_path=xpose_embedding_cache_path,
@@ -100,6 +101,8 @@ class FasterLivePortraitPipeline:
         self.src_lmk_pre = None
         self.R_d_0 = None
         self.x_d_0_info = None
+        self.driving_crop_state = None
+        self.expression_motion_cache = {}
         self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
         self.exp_smooth = utils.OneEuroFilter(4, 0.3)
 
@@ -128,6 +131,41 @@ class FasterLivePortraitPipeline:
         # [c_s,lip, c_d,lip,i]
         combined_lip_ratio_tensor = np.concatenate([c_s_lip, c_d_lip_i], axis=1)  # 1x2
         return combined_lip_ratio_tensor
+
+    def stabilize_driving_bbox(self, bbox):
+        if not self.cfg.infer_params.get("flag_stabilize_driving_crop", False):
+            return bbox
+
+        left, top, right, bot = [float(x) for x in bbox]
+        center = np.array([(left + right) * 0.5, (top + bot) * 0.5], dtype=np.float32)
+        size = float(max(right - left, bot - top))
+        if size <= 1:
+            return bbox
+
+        if self.driving_crop_state is None:
+            self.driving_crop_state = {"center": center, "size": size}
+        else:
+            center_alpha = float(self.cfg.infer_params.get("driving_crop_center_smoothing", 0.85))
+            scale_alpha = float(self.cfg.infer_params.get("driving_crop_scale_smoothing", 0.98))
+            center_alpha = min(max(center_alpha, 0.0), 0.99)
+            scale_alpha = min(max(scale_alpha, 0.0), 0.99)
+            prev_center = self.driving_crop_state["center"]
+            prev_size = self.driving_crop_state["size"]
+            center = prev_center * center_alpha + center * (1.0 - center_alpha)
+            if self.cfg.infer_params.get("flag_lock_driving_crop_scale", True):
+                size = prev_size
+            else:
+                size = prev_size * scale_alpha + size * (1.0 - scale_alpha)
+            self.driving_crop_state = {"center": center, "size": size}
+
+        half = self.driving_crop_state["size"] * 0.5
+        center = self.driving_crop_state["center"]
+        return [
+            float(center[0] - half),
+            float(center[1] - half),
+            float(center[0] + half),
+            float(center[1] + half),
+        ]
 
     def prepare_source(self, source_path, **kwargs):
         print(f"process source:{source_path} >>>>>>>>")
@@ -212,7 +250,7 @@ class FasterLivePortraitPipeline:
                 src_infos = [[] for _ in range(len(crop_infos))]
                 for i, crop_info in enumerate(crop_infos):
                     source_lmk = crop_info['lmk_crop']
-                    img_crop, img_crop_256x256 = crop_info['img_crop'], crop_info['img_crop_256x256']
+                    img_crop_256x256 = crop_info['img_crop_256x256']
                     pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(
                         img_crop_256x256)
                     x_s_info = {
@@ -268,7 +306,7 @@ class FasterLivePortraitPipeline:
                 self.src_infos.append(src_infos[:])
             print(f"finish process source:{source_path} >>>>>>>>")
             return len(self.src_infos) > 0
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             return False
 
@@ -313,7 +351,7 @@ class FasterLivePortraitPipeline:
 
     def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio,
              I_p_pstbk, **kwargs):
-        out_crop, out_org = None, None
+        out_crop = None
         eye_delta_before_animation = None
         for j in range(len(src_info)):
             if self.is_source_video:
@@ -380,8 +418,11 @@ class FasterLivePortraitPipeline:
                             delta_new[:, eyes_idx, :] = (x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp']))[:,
                                                         eyes_idx, :]
                 if self.cfg.infer_params.animation_region in ["all"]:
-                    scale_new = x_s_info['scale'] if self.is_source_video else x_s_info['scale'] * (
-                            x_d_i_info['scale'] / x_d_0_info['scale'])
+                    if self.cfg.infer_params.get("flag_lock_driving_motion_scale", False):
+                        scale_new = x_s_info['scale']
+                    else:
+                        scale_new = x_s_info['scale'] if self.is_source_video else x_s_info['scale'] * (
+                                x_d_i_info['scale'] / x_d_0_info['scale'])
                 else:
                     scale_new = x_s_info['scale']
                 if self.cfg.infer_params.animation_region in ["all"]:
@@ -430,6 +471,14 @@ class FasterLivePortraitPipeline:
 
             t_new[..., 2] = 0  # zero tz
             x_d_i_new = scale_new * (x_c_s @ R_new + delta_new) + t_new
+            if (not self.is_animal and not self.is_source_video and self.cfg.infer_params.flag_relative_motion and
+                    self.cfg.infer_params.get("driving_option", "pose-friendly") == "expression-friendly"):
+                cache = self.expression_motion_cache.setdefault(j, {})
+                if kwargs.get("first_frame", False) or "x_d_0_new" not in cache:
+                    cache["x_d_0_new"] = x_d_i_new.copy()
+                    cache["motion_multiplier"] = utils.calc_motion_multiplier(x_s, cache["x_d_0_new"])
+                x_d_i_new = (x_d_i_new - cache["x_d_0_new"]) * cache["motion_multiplier"] + x_s
+
             if not self.is_animal:
                 # Algorithm 1:
                 if not self.cfg.infer_params.flag_stitching and not self.cfg.infer_params.flag_eye_retargeting and not self.cfg.infer_params.flag_lip_retargeting:
@@ -477,18 +526,32 @@ class FasterLivePortraitPipeline:
                     x_d_i_new = self.stitching(x_s, x_d_i_new)
 
             x_d_i_new = x_s + (x_d_i_new - x_s) * self.cfg.infer_params.driving_multiplier
-            out_crop = self.model_dict["warping_spade"].predict(f_s, x_s, x_d_i_new)
+            warping_spade = self.model_dict["warping_spade"]
+            if realtime and getattr(warping_spade, "predict_type", None) == "mlx":
+                out_crop = warping_spade.predict(
+                    f_s, x_s, x_d_i_new, return_numpy=True, return_uint8=True
+                )
+            else:
+                out_crop = warping_spade.predict(f_s, x_s, x_d_i_new)
             if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
                 # TODO: pasteback is slow, considering optimize it using multi-threading or GPU
                 # I_p_pstbk = paste_back(out_crop, crop_info['M_c2o'], I_p_pstbk, mask_ori_float)
                 I_p_pstbk = paste_back_pytorch(out_crop, M, I_p_pstbk, mask_ori_float)
+        if realtime:
+            if isinstance(out_crop, np.ndarray):
+                out_crop_np = out_crop if out_crop.dtype == np.uint8 else out_crop.astype(np.uint8)
+            else:
+                out_crop_np = out_crop.to(dtype=torch.uint8).cpu().numpy()
+            return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
         return out_crop.to(dtype=torch.uint8).cpu().numpy(), I_p_pstbk.to(dtype=torch.uint8).cpu().numpy()
 
     def run(self, image, img_src, src_info, **kwargs):
         img_bgr = image
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        I_p_pstbk = torch.from_numpy(img_src).to(self.device).float()
-        realtime = kwargs.get("realtime", False)
+        realtime = kwargs.pop("realtime", False)
+        if kwargs.get("first_frame", False):
+            self.driving_crop_state = None
+        I_p_pstbk = img_src if realtime else torch.from_numpy(img_src).to(self.device).float()
         if self.cfg.infer_params.flag_crop_driving_video:
             if self.src_lmk_pre is None:
                 src_face = self.model_dict["face_analysis"].predict(img_bgr)
@@ -504,7 +567,7 @@ class FasterLivePortraitPipeline:
             ret_bbox = parse_bbox_from_landmark(
                 lmk,
                 scale=self.cfg.crop_params.dri_scale,
-                vx_ratio_crop_video=self.cfg.crop_params.dri_vx_ratio,
+                vx_ratio=self.cfg.crop_params.dri_vx_ratio,
                 vy_ratio=self.cfg.crop_params.dri_vy_ratio,
             )["bbox"]
             global_bbox = [
@@ -513,6 +576,7 @@ class FasterLivePortraitPipeline:
                 ret_bbox[2, 0],
                 ret_bbox[2, 1],
             ]
+            global_bbox = self.stabilize_driving_bbox(global_bbox)
             ret_dct = crop_image_by_bbox(
                 img_rgb,
                 global_bbox,
@@ -561,6 +625,10 @@ class FasterLivePortraitPipeline:
             self.frame_id = 0
             self.R_d_0 = R_d_i.copy()
             self.x_d_0_info = copy.deepcopy(x_d_i_info)
+            warping_spade = self.model_dict.get("warping_spade")
+            if hasattr(warping_spade, "reset_temporal_cache"):
+                warping_spade.reset_temporal_cache()
+            self.expression_motion_cache = {}
             # realtime smooth
             self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
             self.exp_smooth = utils.OneEuroFilter(4, 0.3)
@@ -572,8 +640,8 @@ class FasterLivePortraitPipeline:
         return img_crop, out_crop, I_p_pstbk, dri_motion_info
 
     def run_with_pkl(self, dri_motion_info, img_src, src_info, **kwargs):
-        I_p_pstbk = torch.from_numpy(img_src).to(self.device).float()
-        realtime = kwargs.get("realtime", False)
+        realtime = kwargs.pop("realtime", False)
+        I_p_pstbk = img_src if realtime else torch.from_numpy(img_src).to(self.device).float()
 
         input_eye_ratio = dri_motion_info[1]
         input_lip_ratio = dri_motion_info[2]
@@ -584,6 +652,10 @@ class FasterLivePortraitPipeline:
             self.frame_id = 0
             self.R_d_0 = R_d_i.copy()
             self.x_d_0_info = copy.deepcopy(x_d_i_info)
+            warping_spade = self.model_dict.get("warping_spade")
+            if hasattr(warping_spade, "reset_temporal_cache"):
+                warping_spade.reset_temporal_cache()
+            self.expression_motion_cache = {}
             # realtime smooth
             self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
             self.exp_smooth = utils.OneEuroFilter(4, 0.3)
@@ -594,4 +666,5 @@ class FasterLivePortraitPipeline:
         return out_crop, I_p_pstbk
 
     def __del__(self):
-        self.clean_models()
+        if hasattr(self, "model_dict"):
+            self.clean_models()

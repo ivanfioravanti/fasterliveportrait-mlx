@@ -3,12 +3,21 @@ motion field predicted by DenseMotionNetwork."""
 
 from __future__ import annotations
 
+import os
+
 import mlx.core as mx
 import mlx.nn as nn
 
 from .util import SameBlock2d
 from .dense_motion import DenseMotionNetwork
-from .grid_sample import grid_sample_3d
+from .grid_sample import grid_sample_3d, grid_sample_3d_to_2d_channels, grid_sample_3d_to_2d_channels_c4
+from .tensor_ops import conv2d_1x1_tensorops
+
+
+_WARP_OUT_BACKEND = os.environ.get("FLP_MLX_WARP_OUT_BACKEND")
+if _WARP_OUT_BACKEND is None:
+    _WARP_OUT_BACKEND = "direct" if os.environ.get("FLP_MLX_FUSED_WARP_OUT", "0") == "1" else "standard"
+_WARP_FOURTH_BACKEND = os.environ.get("FLP_MLX_WARP_FOURTH_BACKEND", "native")
 
 
 class WarpingNetwork(nn.Module):
@@ -58,14 +67,22 @@ class WarpingNetwork(nn.Module):
         occlusion_map = dense_motion.get("occlusion_map")
         deformation = dense_motion["deformation"]  # (N, D, H, W, 3)
 
-        out = grid_sample_3d(feature_3d, deformation, align_corners=False)
-        # PyTorch view collapses (C, D) into one channel axis with C outer, D inner.
-        # In NDHWC, we transpose so (D, C) move adjacent at the end with C outer:
-        n, d, h, w, c = out.shape
-        # (N, D, H, W, C) -> (N, H, W, C, D) -> (N, H, W, C*D)
-        out = mx.transpose(out, (0, 2, 3, 4, 1)).reshape(n, h, w, c * d)
+        if _WARP_OUT_BACKEND == "c4":
+            out = grid_sample_3d_to_2d_channels_c4(feature_3d, deformation, align_corners=False)
+        elif _WARP_OUT_BACKEND == "direct":
+            out = grid_sample_3d_to_2d_channels(feature_3d, deformation, align_corners=False)
+        else:
+            out = grid_sample_3d(feature_3d, deformation, align_corners=False)
+            # PyTorch view collapses (C, D) into one channel axis with C outer, D inner.
+            # In NDHWC, we transpose so (D, C) move adjacent at the end with C outer:
+            n, d, h, w, c = out.shape
+            # (N, D, H, W, C) -> (N, H, W, C, D) -> (N, H, W, C*D)
+            out = mx.transpose(out, (0, 2, 3, 4, 1)).reshape(n, h, w, c * d)
         out = self.third(out)
-        out = self.fourth(out)
+        if _WARP_FOURTH_BACKEND == "tensorops" and out.dtype in (mx.float16, mx.bfloat16):
+            out = conv2d_1x1_tensorops(out, self.fourth.weight, self.fourth.bias)
+        else:
+            out = self.fourth(out)
         if self.flag_use_occlusion_map and occlusion_map is not None:
             out = out * occlusion_map
 

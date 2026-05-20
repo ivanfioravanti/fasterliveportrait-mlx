@@ -2,15 +2,11 @@
 # @Author  : wenshao
 # @Email   : wenshaoguo0611@gmail.com
 # @Project : FasterLivePortrait
-# @FileName: gradio_live_portrait_pipeline.py
-import pdb
-
 import gradio as gr
 import cv2
 import datetime
 import os
 import time
-import torchaudio
 from tqdm import tqdm
 import subprocess
 import pickle
@@ -18,13 +14,11 @@ import numpy as np
 from .faster_live_portrait_pipeline import FasterLivePortraitPipeline
 from .joyvasa_audio_to_motion_pipeline import JoyVASAAudio2MotionPipeline
 from ..utils.utils import video_has_audio
-from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matrix, calc_lip_close_ratio, \
-    calc_eye_close_ratio, transform_keypoint, concat_feat
-from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back, paste_back_pytorch
+from ..utils.utils import resize_to_limit, prepare_paste_back, transform_keypoint
+from ..utils.crop import crop_image, paste_back_pytorch
 from src.utils import utils
 import platform
 import torch
-from PIL import Image
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"
@@ -32,11 +26,59 @@ else:
     FFMPEG = "ffmpeg"
 
 
+def mux_audio(video_path, audio_path, output_path, duration=None, fps=None):
+    cmd = [
+        FFMPEG,
+        "-y",
+        "-i",
+        video_path,
+        "-i",
+        audio_path,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-b:v",
+        "10M",
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-pix_fmt",
+        "yuv420p",
+        "-shortest",
+    ]
+    if duration is not None:
+        cmd.extend(["-t", str(duration)])
+    if fps is not None:
+        cmd.extend(["-r", str(fps)])
+    cmd.append(output_path)
+    subprocess.run(cmd, check=True)
+
+
 class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     def __init__(self, cfg, **kwargs):
         super(GradioLivePortraitPipeline, self).__init__(cfg, **kwargs)
         self.joyvasa_pipe = None
         self.kokoro_model = None
+
+    @staticmethod
+    def _video_outputs(video_path, video_path_concat):
+        return (
+            gr.update(visible=True, value=video_path),
+            gr.update(visible=True, value=video_path_concat),
+            gr.update(visible=False, value=None),
+            gr.update(visible=False, value=None),
+        )
+
+    @staticmethod
+    def _image_outputs(image_path, image_path_concat):
+        return (
+            gr.update(visible=False, value=None),
+            gr.update(visible=False, value=None),
+            gr.update(visible=True, value=image_path),
+            gr.update(visible=True, value=image_path_concat),
+        )
 
     def execute_video(
             self,
@@ -47,6 +89,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             input_driving_pickle_path=None,
             input_driving_audio_path=None,
             input_driving_text=None,
+            source_mode=None,
+            driving_mode=None,
             flag_relative_input=True,
             flag_do_crop_input=True,
             flag_remap_input=True,
@@ -63,28 +107,43 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             vx_ratio_crop_driving_video=0.0,
             vy_ratio_crop_driving_video=-0.1,
             driving_smooth_observation_variance=1e-7,
-            tab_selection=None,
-            v_tab_selection=None,
             cfg_scale=4.0,
             voice_name='af',
     ):
         """ for video driven potrait animation
         """
-        if tab_selection == 'Video':
-            input_source_path = input_source_video_path
-        else:
-            input_source_path = input_source_image_path
+        def has_value(value):
+            return value is not None and str(value) not in ("", "None")
 
-        if v_tab_selection == 'Image':
-            input_driving_path = str(input_driving_image_path)
-        elif v_tab_selection == 'Pickle':
-            input_driving_path = str(input_driving_pickle_path)
-        elif v_tab_selection == 'Audio':
-            input_driving_path = str(input_driving_audio_path)
-        elif v_tab_selection == 'Text':
-            input_driving_path = input_driving_text
-        else:
-            input_driving_path = str(input_driving_video_path)
+        selected_source_mode = source_mode if source_mode in ("Image", "Video") else None
+        if selected_source_mode is None:
+            selected_source_mode = "Video" if has_value(input_source_video_path) else "Image"
+        input_source_path = input_source_video_path if selected_source_mode == "Video" else input_source_image_path
+
+        driving_values = {
+            "Video": input_driving_video_path,
+            "Image": input_driving_image_path,
+            "Pickle": input_driving_pickle_path,
+            "Audio": input_driving_audio_path,
+            "Text": input_driving_text,
+        }
+        selected_driving_mode = driving_mode if driving_mode in driving_values else None
+        if selected_driving_mode is None:
+            for mode, value in (
+                ("Video", input_driving_video_path),
+                ("Image", input_driving_image_path),
+                ("Pickle", input_driving_pickle_path),
+                ("Audio", input_driving_audio_path),
+            ):
+                if has_value(value):
+                    selected_driving_mode = mode
+                    break
+            if selected_driving_mode is None and has_value(input_driving_text):
+                selected_driving_mode = "Text"
+
+        input_driving_path = driving_values[selected_driving_mode] if selected_driving_mode else None
+        if selected_driving_mode != "Text" and has_value(input_driving_path):
+            input_driving_path = str(input_driving_path)
 
         if flag_is_animal != self.is_animal:
             self.init_models(is_animal=flag_is_animal)
@@ -112,48 +171,42 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             }
             # update config from user input
             update_ret = self.update_cfg(args_user)
-            if v_tab_selection == 'Video':
+            if selected_driving_mode == 'Video':
                 # video driven animation
                 video_path, video_path_concat, total_time = self.run_video_driving(input_driving_path,
                                                                                    input_source_path,
                                                                                    update_ret=update_ret)
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
-                return gr.update(visible=True), video_path, gr.update(visible=True), video_path_concat, gr.update(
-                    visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-            elif v_tab_selection == 'Pickle':
+                return self._video_outputs(video_path, video_path_concat)
+            elif selected_driving_mode == 'Pickle':
                 # pickle driven animation
                 video_path, video_path_concat, total_time = self.run_pickle_driving(input_driving_path,
                                                                                     input_source_path,
                                                                                     update_ret=update_ret)
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
-                return gr.update(visible=True), video_path, gr.update(visible=True), video_path_concat, gr.update(
-                    visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-            elif v_tab_selection == 'Audio':
+                return self._video_outputs(video_path, video_path_concat)
+            elif selected_driving_mode == 'Audio':
                 # audio driven animation
                 video_path, video_path_concat, total_time = self.run_audio_driving(input_driving_path,
                                                                                    input_source_path,
                                                                                    update_ret=update_ret)
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
-                return gr.update(visible=True), video_path, gr.update(visible=True), video_path_concat, gr.update(
-                    visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-            elif v_tab_selection == 'Text':
+                return self._video_outputs(video_path, video_path_concat)
+            elif selected_driving_mode == 'Text':
                 # Text driven animation
                 video_path, video_path_concat, total_time = self.run_text_driving(input_driving_path,
                                                                                   voice_name,
                                                                                   input_source_path,
                                                                                   update_ret=update_ret)
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
-                return gr.update(visible=True), video_path, gr.update(visible=True), video_path_concat, gr.update(
-                    visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+                return self._video_outputs(video_path, video_path_concat)
             else:
                 # video driven animation
                 image_path, image_path_concat, total_time = self.run_image_driving(input_driving_path,
                                                                                    input_source_path,
                                                                                    update_ret=update_ret)
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
-                return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(
-                    visible=False), gr.update(visible=True), image_path, gr.update(
-                    visible=True), image_path_concat
+                return self._image_outputs(image_path, image_path_concat)
         else:
             raise gr.Error("The input source portrait or driving video hasn't been prepared yet 💥!", duration=5)
 
@@ -256,35 +309,11 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
             if self.is_source_video:
                 duration, fps = utils.get_video_info(vsave_crop_path)
-                subprocess.call(
-                    [FFMPEG, "-i", vsave_crop_path, "-i", driving_video_path,
-                     "-b:v", "10M", "-c:v", "libx264", "-map", "0:v", "-map", "1:a",
-                     "-c:a", "aac", "-pix_fmt", "yuv420p",
-                     "-shortest",  # 以最短的流为基准
-                     "-t", str(duration),  # 设置时长
-                     "-r", str(fps),  # 设置帧率
-                     vsave_crop_path_new, "-y"])
-                subprocess.call(
-                    [FFMPEG, "-i", vsave_org_path, "-i", driving_video_path,
-                     "-b:v", "10M", "-c:v", "libx264", "-map", "0:v", "-map", "1:a",
-                     "-c:a", "aac", "-pix_fmt", "yuv420p",
-                     "-shortest",  # 以最短的流为基准
-                     "-t", str(duration),  # 设置时长
-                     "-r", str(fps),  # 设置帧率
-                     vsave_org_path_new, "-y"])
+                mux_audio(vsave_crop_path, driving_video_path, vsave_crop_path_new, duration=duration, fps=fps)
+                mux_audio(vsave_org_path, driving_video_path, vsave_org_path_new, duration=duration, fps=fps)
             else:
-                subprocess.call(
-                    [FFMPEG, "-i", vsave_crop_path, "-i", driving_video_path,
-                     "-b:v", "10M", "-c:v",
-                     "libx264", "-map", "0:v", "-map", "1:a",
-                     "-c:a", "aac",
-                     "-pix_fmt", "yuv420p", vsave_crop_path_new, "-y", "-shortest"])
-                subprocess.call(
-                    [FFMPEG, "-i", vsave_org_path, "-i", driving_video_path,
-                     "-b:v", "10M", "-c:v",
-                     "libx264", "-map", "0:v", "-map", "1:a",
-                     "-c:a", "aac",
-                     "-pix_fmt", "yuv420p", vsave_org_path_new, "-y", "-shortest"])
+                mux_audio(vsave_crop_path, driving_video_path, vsave_crop_path_new)
+                mux_audio(vsave_org_path, driving_video_path, vsave_org_path_new)
 
             return vsave_org_path_new, vsave_crop_path_new, total_time
         else:
@@ -401,22 +430,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
 
         duration, fps = utils.get_video_info(vsave_crop_path)
-        subprocess.call(
-            [FFMPEG, "-i", vsave_crop_path, "-i", driving_audio_path,
-             "-b:v", "10M", "-c:v", "libx264", "-map", "0:v", "-map", "1:a",
-             "-c:a", "aac", "-pix_fmt", "yuv420p",
-             "-shortest",  # 以最短的流为基准
-             "-t", str(duration),  # 设置时长
-             "-r", str(fps),  # 设置帧率
-             vsave_crop_path_new, "-y"])
-        subprocess.call(
-            [FFMPEG, "-i", vsave_org_path, "-i", driving_audio_path,
-             "-b:v", "10M", "-c:v", "libx264", "-map", "0:v", "-map", "1:a",
-             "-c:a", "aac", "-pix_fmt", "yuv420p",
-             "-shortest",  # 以最短的流为基准
-             "-t", str(duration),  # 设置时长
-             "-r", str(fps),  # 设置帧率
-             vsave_org_path_new, "-y"])
+        mux_audio(vsave_crop_path, driving_audio_path, vsave_crop_path_new, duration=duration, fps=fps)
+        mux_audio(vsave_org_path, driving_audio_path, vsave_org_path_new, duration=duration, fps=fps)
 
         return vsave_org_path_new, vsave_crop_path_new, time.time() - t00
 
@@ -436,15 +451,27 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             # if you install in different path, remember to change below envs
             os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
             os.environ["PHONEMIZER_ESPEAK_PATH"] = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
+        kokoro_dir = "checkpoints/Kokoro-82M"
+        voice_path = os.path.join(kokoro_dir, "voices")
+        if (
+            not voice_name
+            or not os.path.exists(os.path.join(kokoro_dir, "config.json"))
+            or not os.path.exists(os.path.join(kokoro_dir, "kokoro-v1_0.pth"))
+            or not os.path.isdir(voice_path)
+        ):
+            raise gr.Error(
+                "Kokoro text driving assets are not installed. Use audio, video, image, or pickle driving, "
+                "or download checkpoints/Kokoro-82M before using Driving Text.",
+                duration=5,
+            )
         from kokoro import KPipeline, KModel
         import soundfile as sf
         import json
-        with open("checkpoints/Kokoro-82M/config.json", "r", encoding="utf-8") as fin:
+        with open(os.path.join(kokoro_dir, "config.json"), "r", encoding="utf-8") as fin:
             model_config = json.load(fin)
-        model = KModel(config=model_config, model="checkpoints/Kokoro-82M/kokoro-v1_0.pth")
+        model = KModel(config=model_config, model=os.path.join(kokoro_dir, "kokoro-v1_0.pth"))
         pipeline = KPipeline(lang_code=voice_name[0], model=model)  # <= make sure lang_code matches voice
         model.voices = {}
-        voice_path = "checkpoints/Kokoro-82M/voices"
         for vname in os.listdir(voice_path):
             pipeline.voices[os.path.splitext(vname)[0]] = torch.load(os.path.join(voice_path, vname), weights_only=True)
         generator = pipeline(
@@ -537,17 +564,6 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             else:
                 I_s = img_rgb.copy()
             pitch, yaw, roll, t, exp, scale, kp = self.model_dict["motion_extractor"].predict(I_s)
-            x_s_info = {
-                "pitch": pitch,
-                "yaw": yaw,
-                "roll": roll,
-                "t": t,
-                "exp": exp,
-                "scale": scale,
-                "kp": kp
-            }
-            R_s = get_rotation_matrix(x_s_info['pitch'], x_s_info['yaw'], x_s_info['roll'])
-            ############################################
             f_s_user = self.model_dict["app_feat_extractor"].predict(I_s)
             x_s_user = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
             source_lmk_user = crop_info['lmk_crop']

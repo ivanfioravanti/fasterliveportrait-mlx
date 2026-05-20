@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import os
+
 import mlx.core as mx
 import mlx.nn as nn
+
+from .tensor_ops import conv2d_1x1_tensorops
+
+
+_BF16_NATIVE_INSTANCE_NORM = os.environ.get("FLP_MLX_SPADE_BF16_NATIVE_NORM", "1") == "1"
+_SPADE_SHORTCUT_BACKEND = os.environ.get("FLP_MLX_SPADE_SHORTCUT_BACKEND", "native")
+_SPADE_SHORTCUT_MIN_OUT = int(os.environ.get("FLP_MLX_SPADE_SHORTCUT_MIN_OUT", "128"))
 
 
 def _nearest_upsample_nhwc(x: mx.array, factor: int) -> mx.array:
@@ -38,6 +47,11 @@ def _instance_norm_fp32(x: mx.array, eps: float = 1e-5) -> mx.array:
     Input layout: NHWC. Equivalent to InstanceNorm2d(affine=False) in PyTorch.
     Reduce in fp32 to avoid fp16 variance overflow on large activations.
     """
+    if x.dtype == mx.bfloat16 and _BF16_NATIVE_INSTANCE_NORM:
+        mean = mx.mean(x, axis=(1, 2), keepdims=True)
+        var = mx.var(x, axis=(1, 2), keepdims=True)
+        return (x - mean) * mx.rsqrt(var + eps)
+
     in_dtype = x.dtype
     x32 = x.astype(mx.float32)
     mean = mx.mean(x32, axis=(1, 2), keepdims=True)
@@ -99,7 +113,15 @@ class SPADEResnetBlock(nn.Module):
         x32 = x.astype(mx.float32) if upcast else x
         seg32 = seg.astype(mx.float32) if upcast else seg
         if self.learned_shortcut:
-            x_s = self.conv_s(self.norm_s(x32, seg32))
+            x_s_in = self.norm_s(x32, seg32)
+            if (
+                _SPADE_SHORTCUT_BACKEND == "tensorops"
+                and x_s_in.dtype in (mx.float16, mx.bfloat16)
+                and self.conv_s.weight.shape[0] >= _SPADE_SHORTCUT_MIN_OUT
+            ):
+                x_s = conv2d_1x1_tensorops(x_s_in, self.conv_s.weight, getattr(self.conv_s, "bias", None))
+            else:
+                x_s = self.conv_s(x_s_in)
         else:
             x_s = x32
         dx = self.conv_0(nn.leaky_relu(self.norm_0(x32, seg32), 2e-1))
