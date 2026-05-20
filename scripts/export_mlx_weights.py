@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 from src.models.mlx_modules.landmark import LandmarkModel
 from src.models.mlx_modules.landmark_weight_extract import load_landmark_from_onnx
 from src.models.mlx_modules.weight_convert import save_converted_npz
+from src.models.mlx_joyvasa_motion_model import export_mlx_joyvasa_motion_from_pytorch_checkpoint
 
 
 _OFFICIAL_KEY_BY_MODULE = {
@@ -143,6 +144,8 @@ HUMAN_STITCHING = (
 )
 
 OFFICIAL_STITCHING = "liveportrait_torch/stitching_retargeting_module.pth"
+JOYVASA_MOTION_SRC = "JoyVASA/motion_generator/motion_generator_hubert_chinese.pt"
+JOYVASA_MOTION_DST = "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz"
 
 
 def _save_npz(path: Path, payload: dict[str, np.ndarray]) -> None:
@@ -190,6 +193,16 @@ def export_core_models(checkpoints_dir: Path, entries) -> None:
         print(f"wrote {dst}")
 
 
+def export_joyvasa_motion(checkpoints_dir: Path, src_rel: str, dst_rel: str) -> None:
+    src = checkpoints_dir / src_rel
+    dst = checkpoints_dir / dst_rel
+    if not src.exists():
+        print(f"skip missing {src}")
+        return
+    export_mlx_joyvasa_motion_from_pytorch_checkpoint(src, dst)
+    print(f"wrote {dst}")
+
+
 def export_human_stitching(checkpoints_dir: Path, dst_dir: Path, source: str, official_path: Path) -> None:
     use_official = source in ("auto", "torch") and official_path.exists()
     if source == "torch" and not official_path.exists():
@@ -218,6 +231,9 @@ def main() -> None:
         help="path to official stitching_retargeting_module.pth",
     )
     parser.add_argument("--include-animal", action="store_true", help="also export animal core MLX weights")
+    parser.add_argument("--include-joyvasa", action="store_true", help="also export JoyVASA motion MLX weights")
+    parser.add_argument("--joyvasa-motion-src", default=JOYVASA_MOTION_SRC, help="JoyVASA PyTorch motion checkpoint")
+    parser.add_argument("--joyvasa-motion-dst", default=JOYVASA_MOTION_DST, help="JoyVASA MLX motion npz output")
     args = parser.parse_args()
 
     checkpoints_dir = Path(args.checkpoints_dir)
@@ -239,6 +255,8 @@ def main() -> None:
     )
     if args.include_animal:
         export_core_models(checkpoints_dir, ANIMAL_CORE)
+    if args.include_joyvasa:
+        export_joyvasa_motion(checkpoints_dir, args.joyvasa_motion_src, args.joyvasa_motion_dst)
 
 
 if __name__ == "__main__":

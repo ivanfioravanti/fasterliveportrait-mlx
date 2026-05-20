@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
+import mlx.utils as mu
 import numpy as np
 
 
@@ -25,6 +27,15 @@ def _to_mx_index(value):
 
 def _gelu(x):
     return nn.gelu(x)
+
+
+_METADATA_PREFIX = "__joyvasa_mlx__."
+_TARGET_TO_ID = {"sample": 0, "noise": 1}
+_ID_TO_TARGET = {value: key for key, value in _TARGET_TO_ID.items()}
+_CFG_MODE_TO_ID = {"incremental": 0, "independent": 1}
+_ID_TO_CFG_MODE = {value: key for key, value in _CFG_MODE_TO_ID.items()}
+_ARCHITECTURE_TO_ID = {"decoder": 0}
+_ID_TO_ARCHITECTURE = {value: key for key, value in _ARCHITECTURE_TO_ID.items()}
 
 
 class MlxDiffusionSchedule:
@@ -294,6 +305,7 @@ class MlxJoyVASAMotionModel(nn.Module):
         align_mask_width=1,
         no_use_learnable_pe=True,
         n_diff_steps=500,
+        denoising_n_diff_steps=None,
         diff_schedule="cosine",
         cfg_mode="incremental",
         guiding_conditions="audio,",
@@ -312,6 +324,7 @@ class MlxJoyVASAMotionModel(nn.Module):
         self.feature_dim = feature_dim
         self.cfg_mode = cfg_mode
         self.guiding_conditions = _normalize_cfg_conditions(guiding_conditions)
+        denoising_n_diff_steps = n_diff_steps if denoising_n_diff_steps is None else denoising_n_diff_steps
 
         self.start_motion_feat = mx.random.normal((1, n_prev_motions, motion_feat_dim))
         self.start_audio_feat = mx.random.normal((1, n_prev_motions, feature_dim))
@@ -330,7 +343,7 @@ class MlxJoyVASAMotionModel(nn.Module):
             no_use_learnable_pe=no_use_learnable_pe,
             n_prev_motions=n_prev_motions,
             n_motions=n_motions,
-            n_diff_steps=n_diff_steps,
+            n_diff_steps=denoising_n_diff_steps,
         )
         self.diffusion_sched = MlxDiffusionSchedule(n_diff_steps, diff_schedule)
 
@@ -510,3 +523,190 @@ def _noise_for_step(t, like, noise_by_step):
     if noise_by_step is None:
         return mx.random.normal(like.shape, dtype=like.dtype)
     return _to_mx(noise_by_step[t], dtype=like.dtype)
+
+
+def save_mlx_joyvasa_motion_npz(path, model):
+    payload = {
+        name: np.asarray(value, dtype=np.float32)
+        for name, value in mu.tree_flatten(model.parameters())
+    }
+    for name in ("betas", "alphas", "alpha_bars", "sigmas_flex", "sigmas_inflex"):
+        payload[f"diffusion_sched.{name}"] = np.asarray(getattr(model.diffusion_sched, name), dtype=np.float32)
+    payload.update(_metadata_payload(model))
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **payload)
+
+
+def load_mlx_joyvasa_motion_npz(path, *, dtype=mx.float32, strict=True, cfg_mode=None):
+    state = mx.load(str(path))
+    config = _config_from_loaded_state(state)
+    if cfg_mode is not None:
+        config["cfg_mode"] = cfg_mode
+
+    model = MlxJoyVASAMotionModel(**config)
+    params = {
+        key: value.astype(dtype)
+        for key, value in state.items()
+        if not key.startswith(_METADATA_PREFIX) and not key.startswith("diffusion_sched.")
+    }
+
+    expected_keys = {key for key, _ in mu.tree_flatten(model.parameters())}
+    if strict:
+        missing = expected_keys - set(params)
+        unexpected = set(params) - expected_keys
+        if missing or unexpected:
+            raise ValueError(
+                "JoyVASA MLX state_dict mismatch.\n"
+                f"  missing in checkpoint: {sorted(missing)[:8]}\n"
+                f"  unexpected in checkpoint: {sorted(unexpected)[:8]}"
+            )
+
+    model.update(mu.tree_unflatten(list(params.items())))
+    for name in ("betas", "alphas", "alpha_bars", "sigmas_flex", "sigmas_inflex"):
+        setattr(model.diffusion_sched, name, state[f"diffusion_sched.{name}"].astype(dtype))
+    model.diffusion_sched.num_steps = int(model.diffusion_sched.betas.shape[0] - 1)
+    mx.eval(model.parameters())
+    mx.eval(
+        model.diffusion_sched.betas,
+        model.diffusion_sched.alphas,
+        model.diffusion_sched.alpha_bars,
+        model.diffusion_sched.sigmas_flex,
+        model.diffusion_sched.sigmas_inflex,
+    )
+    return model
+
+
+def export_mlx_joyvasa_motion_from_pytorch_checkpoint(
+    checkpoint_path,
+    out_path,
+    *,
+    cfg_mode="incremental",
+    guiding_conditions="audio,",
+):
+    import torch
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    args = checkpoint["args"]
+    state_dict = checkpoint["model"]
+    config = _config_from_checkpoint(
+        args,
+        state_dict,
+        cfg_mode=cfg_mode,
+        guiding_conditions=guiding_conditions,
+    )
+    model = MlxJoyVASAMotionModel(**config)
+    model.load_pytorch_state_dict(state_dict)
+    save_mlx_joyvasa_motion_npz(out_path, model)
+
+
+def _metadata_payload(model):
+    return {
+        _metadata_key("format_version"): np.array(1, dtype=np.int32),
+        _metadata_key("target"): np.array(_TARGET_TO_ID[model.target], dtype=np.int32),
+        _metadata_key("architecture"): np.array(_ARCHITECTURE_TO_ID[model.architecture], dtype=np.int32),
+        _metadata_key("motion_feat_dim"): np.array(model.motion_feat_dim, dtype=np.int32),
+        _metadata_key("fps"): np.array(model.fps, dtype=np.int32),
+        _metadata_key("n_motions"): np.array(model.n_motions, dtype=np.int32),
+        _metadata_key("n_prev_motions"): np.array(model.n_prev_motions, dtype=np.int32),
+        _metadata_key("feature_dim"): np.array(model.feature_dim, dtype=np.int32),
+        _metadata_key("n_heads"): np.array(model.denoising_net.n_heads, dtype=np.int32),
+        _metadata_key("n_layers"): np.array(model.denoising_net.n_layers, dtype=np.int32),
+        _metadata_key("mlp_ratio"): np.array(model.denoising_net.mlp_ratio, dtype=np.int32),
+        _metadata_key("align_mask_width"): np.array(model.denoising_net.align_mask_width, dtype=np.int32),
+        _metadata_key("no_use_learnable_pe"): np.array(not model.denoising_net.use_learnable_pe, dtype=np.int32),
+        _metadata_key("n_diff_steps"): np.array(model.diffusion_sched.num_steps, dtype=np.int32),
+        _metadata_key("denoising_n_diff_steps"): np.array(model.denoising_net.TE.pe.shape[1] - 1, dtype=np.int32),
+        _metadata_key("cfg_mode"): np.array(_CFG_MODE_TO_ID[model.cfg_mode], dtype=np.int32),
+        _metadata_key("has_audio_guidance"): np.array("audio" in model.guiding_conditions, dtype=np.int32),
+        _metadata_key("use_indicator"): np.array(bool(model.denoising_net.use_indicator), dtype=np.int32),
+    }
+
+
+def _config_from_loaded_state(state):
+    format_version = _metadata_int(state, "format_version")
+    if format_version != 1:
+        raise ValueError(f"Unsupported JoyVASA MLX weight format version: {format_version}")
+
+    return {
+        "target": _ID_TO_TARGET[_metadata_int(state, "target")],
+        "architecture": _ID_TO_ARCHITECTURE[_metadata_int(state, "architecture")],
+        "motion_feat_dim": _metadata_int(state, "motion_feat_dim"),
+        "fps": _metadata_int(state, "fps"),
+        "n_motions": _metadata_int(state, "n_motions"),
+        "n_prev_motions": _metadata_int(state, "n_prev_motions"),
+        "feature_dim": _metadata_int(state, "feature_dim"),
+        "n_heads": _metadata_int(state, "n_heads"),
+        "n_layers": _metadata_int(state, "n_layers"),
+        "mlp_ratio": _metadata_int(state, "mlp_ratio"),
+        "align_mask_width": _metadata_int(state, "align_mask_width"),
+        "no_use_learnable_pe": bool(_metadata_int(state, "no_use_learnable_pe")),
+        "n_diff_steps": _metadata_int(state, "n_diff_steps"),
+        "denoising_n_diff_steps": _metadata_int(state, "denoising_n_diff_steps"),
+        "cfg_mode": _ID_TO_CFG_MODE[_metadata_int(state, "cfg_mode")],
+        "guiding_conditions": "audio," if _metadata_int(state, "has_audio_guidance") else "",
+        "use_indicator": bool(_metadata_int(state, "use_indicator")),
+    }
+
+
+def _config_from_checkpoint(args, state_dict, *, cfg_mode, guiding_conditions):
+    motion_feat_dim = int(_arg_or_default(args, "motion_feat_dim", 76))
+    feature_dim = int(_arg_or_default(args, "feature_dim", 512))
+    denoising_prefix = "denoising_net."
+    feature_proj_weight = state_dict.get(denoising_prefix + "feature_proj.weight")
+    use_indicator = None
+    if feature_proj_weight is not None:
+        use_indicator = int(feature_proj_weight.shape[1]) == motion_feat_dim + 1
+
+    n_layers = _infer_denoising_layer_count(state_dict, denoising_prefix)
+    linear1_weight = state_dict.get(denoising_prefix + "transformer.layers.0.linear1.weight")
+    mlp_ratio = int(linear1_weight.shape[0] // feature_dim) if linear1_weight is not None else 4
+    no_use_learnable_pe = denoising_prefix + "PE.pe" in state_dict
+    denoising_te = state_dict.get(denoising_prefix + "TE.pe")
+    denoising_n_diff_steps = int(denoising_te.shape[1] - 1) if denoising_te is not None else 500
+    diffusion_betas = state_dict.get("diffusion_sched.betas")
+    n_diff_steps = int(diffusion_betas.shape[0] - 1) if diffusion_betas is not None else int(
+        _arg_or_default(args, "n_diff_steps", 500)
+    )
+
+    return {
+        "target": _arg_or_default(args, "target", "sample"),
+        "architecture": _arg_or_default(args, "architecture", "decoder"),
+        "motion_feat_dim": motion_feat_dim,
+        "fps": int(_arg_or_default(args, "fps", 25)),
+        "n_motions": int(_arg_or_default(args, "n_motions", 100)),
+        "n_prev_motions": int(_arg_or_default(args, "n_prev_motions", 10)),
+        "feature_dim": feature_dim,
+        "n_heads": int(_arg_or_default(args, "n_heads", 8)),
+        "n_layers": n_layers,
+        "mlp_ratio": mlp_ratio,
+        "align_mask_width": int(_arg_or_default(args, "align_mask_width", 1)),
+        "no_use_learnable_pe": no_use_learnable_pe,
+        "n_diff_steps": n_diff_steps,
+        "denoising_n_diff_steps": denoising_n_diff_steps,
+        "diff_schedule": _arg_or_default(args, "diff_schedule", "cosine"),
+        "cfg_mode": cfg_mode,
+        "guiding_conditions": guiding_conditions,
+        "use_indicator": use_indicator,
+    }
+
+
+def _infer_denoising_layer_count(state_dict, prefix):
+    count = 0
+    while prefix + f"transformer.layers.{count}.self_attn.in_proj_weight" in state_dict:
+        count += 1
+    return count or 8
+
+
+def _metadata_key(name):
+    return f"{_METADATA_PREFIX}{name}"
+
+
+def _metadata_int(state, name):
+    return int(np.asarray(state[_metadata_key(name)]).item())
+
+
+def _arg_or_default(args, name, default):
+    value = getattr(args, name, default)
+    return default if value is None else value

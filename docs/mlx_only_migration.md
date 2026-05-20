@@ -33,11 +33,14 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 - Added the MLX reverse diffusion sampler for already-computed JoyVASA audio features,
   including the non-CFG path, audio classifier-free guidance path, indicator handling,
   and both `sample` and `noise` target update equations.
+- Added `.npz` export/load support for the JoyVASA MLX motion model. The export path
+  reads the trusted PyTorch checkpoint once and writes runtime weights that can be
+  loaded without importing torch.
 - Added PyTorch parity tests in `tests/test_mlx_joyvasa_motion_model.py` for each
   migrated part. These tests use fixed inputs and copied PyTorch weights so future
   migration steps can catch mathematical drift before replacing runtime paths.
-- Remaining JoyVASA work: port the audio encoder feature path, checkpoint
-  loading/export, and pipeline integration.
+- Export command: `uv run python scripts/export_mlx_weights.py --include-joyvasa`.
+- Remaining JoyVASA work: port the audio encoder feature path and pipeline integration.
 
 ## Compatibility Policy
 

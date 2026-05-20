@@ -1,4 +1,5 @@
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import mlx.core as mx
@@ -361,6 +362,102 @@ def test_mlx_motion_sampler_matches_torch_with_audio_cfg(monkeypatch):
         mx.array(motion_at_t),
         indicator=mx.array(indicator),
         cfg_mode="incremental",
+        cfg_cond=["audio"],
+        cfg_scale=1.2,
+        dynamic_threshold=0,
+        noise_by_step=noise_by_step,
+    )
+
+    np.testing.assert_allclose(np.array(mlx_motion), torch_motion.numpy(), rtol=6e-3, atol=6e-3)
+    np.testing.assert_allclose(np.array(mlx_noise), torch_noise.numpy(), rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(np.array(mlx_audio), torch_audio.numpy(), rtol=1e-6, atol=1e-7)
+
+
+def test_exported_mlx_motion_npz_reloads_and_matches_torch(tmp_path, monkeypatch):
+    import src.models.JoyVASA.dit_talking_head as torch_dit
+    from src.models.mlx_joyvasa_motion_model import (
+        export_mlx_joyvasa_motion_from_pytorch_checkpoint,
+        load_mlx_joyvasa_motion_npz,
+    )
+
+    torch.manual_seed(5)
+    rng = np.random.default_rng(31)
+    torch_model = _make_torch_motion_model(
+        target="sample",
+        use_indicator=True,
+        n_diff_steps=3,
+        guiding_conditions="audio,",
+        cfg_mode="independent",
+    )
+    checkpoint_path = tmp_path / "motion_generator.pt"
+    weights_path = tmp_path / "motion_generator_mlx.npz"
+    args = Namespace(
+        target="sample",
+        architecture="decoder",
+        motion_feat_dim=4,
+        fps=25,
+        n_motions=3,
+        n_prev_motions=2,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        no_use_learnable_pe=True,
+        n_diff_steps=3,
+        diff_schedule="cosine",
+        use_indicator=True,
+    )
+    torch.save({"args": args, "model": torch_model.state_dict()}, checkpoint_path)
+
+    export_mlx_joyvasa_motion_from_pytorch_checkpoint(
+        checkpoint_path,
+        weights_path,
+        cfg_mode="independent",
+        guiding_conditions="audio,",
+    )
+    mlx_model = load_mlx_joyvasa_motion_npz(weights_path)
+
+    assert mlx_model.n_motions == 3
+    assert mlx_model.n_prev_motions == 2
+    assert mlx_model.feature_dim == 8
+    assert mlx_model.cfg_mode == "independent"
+    assert mlx_model.guiding_conditions == ["audio"]
+    assert mlx_model.denoising_net.use_indicator is True
+
+    audio = rng.normal(size=(1, 3, 8)).astype(np.float32)
+    prev_motion = rng.normal(size=(1, 2, 4)).astype(np.float32)
+    prev_audio = rng.normal(size=(1, 2, 8)).astype(np.float32)
+    motion_at_t = rng.normal(size=(1, 3, 4)).astype(np.float32)
+    indicator = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+    noise_by_step = {
+        3: rng.normal(size=(1, 3, 4)).astype(np.float32),
+        2: rng.normal(size=(1, 3, 4)).astype(np.float32),
+    }
+    noise_iter = iter([torch.from_numpy(noise_by_step[3]), torch.from_numpy(noise_by_step[2])])
+
+    monkeypatch.setattr(torch, "randn_like", lambda value: next(noise_iter).to(dtype=value.dtype))
+    monkeypatch.setattr(torch_dit, "tqdm", lambda values: values)
+
+    with torch.no_grad():
+        torch_motion, torch_noise, torch_audio = torch_model.sample(
+            torch.from_numpy(audio),
+            torch.from_numpy(prev_motion),
+            torch.from_numpy(prev_audio),
+            torch.from_numpy(motion_at_t),
+            indicator=torch.from_numpy(indicator),
+            cfg_mode="independent",
+            cfg_cond=["audio"],
+            cfg_scale=1.2,
+            dynamic_threshold=0,
+        )
+    mlx_motion, mlx_noise, mlx_audio = mlx_model.sample(
+        mx.array(audio),
+        mx.array(prev_motion),
+        mx.array(prev_audio),
+        mx.array(motion_at_t),
+        indicator=mx.array(indicator),
+        cfg_mode="independent",
         cfg_cond=["audio"],
         cfg_scale=1.2,
         dynamic_threshold=0,
