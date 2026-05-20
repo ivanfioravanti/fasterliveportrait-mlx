@@ -6,10 +6,9 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 
 ## Current Runtime Surface
 
-- MLX: human and animal LivePortrait core models, human landmark model, stitching,
-  retargeting, MLX-audio Kokoro text-to-speech, JoyVASA HuBERT audio features,
-  and JoyVASA diffusion/motion generation.
-- Native/non-MLX: MediaPipe human face landmarks.
+- MLX: human and animal LivePortrait core models, human face-analysis bootstrap,
+  human landmark model, stitching, retargeting, MLX-audio Kokoro text-to-speech,
+  JoyVASA HuBERT audio features, and JoyVASA diffusion/motion generation.
 - PyTorch compatibility: XPose animal landmarks.
 - Conversion-only PyTorch: export scripts that read source PyTorch/Transformers
   checkpoints and write MLX `.npz` runtime weights.
@@ -21,10 +20,24 @@ Transformers, or Python-only model path as a temporary compatibility layer.
    - export HuBERT/audio encoder weights into an MLX-compatible format,
    - port the JoyVASA diffusion/Transformer blocks to MLX,
    - verify generated motion sequences match the PyTorch baseline closely enough.
-3. Replace XPose animal landmarks with an MLX-compatible detector, or isolate it behind
+3. Replace MediaPipe human face analysis with an MLX-compatible bootstrap/refiner.
+4. Replace XPose animal landmarks with an MLX-compatible detector, or isolate it behind
    an optional animal-only compatibility layer until an MLX model is available.
-4. Once the Python runtime is MLX-only, map the model graph and preprocessing contracts
+5. Once the Python runtime is MLX-only, map the model graph and preprocessing contracts
    onto `mlx-swift`.
+
+## Human Face Analysis MLX Progress
+
+- Replaced the default MediaPipe human face-analysis config with `MlxFaceAnalysisModel`.
+- `MlxFaceAnalysisModel` uses the exported MLX landmark checkpoint as a full-frame
+  bootstrap and performs one refinement pass on the landmark crop.
+- This is a human-face bootstrap/refiner, not a general multi-object detector;
+  animal inputs still need Animal mode and XPose until that path is replaced.
+- Updated full-frame landmark inference to letterbox instead of stretching non-square
+  images, so source/driving landmark coordinates map back into the original image
+  geometry.
+- MediaPipe remains as legacy code only; it is no longer downloaded or installed by
+  the default runtime path.
 
 ## JoyVASA MLX Progress
 

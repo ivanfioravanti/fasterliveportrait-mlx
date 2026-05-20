@@ -155,9 +155,9 @@ def main() -> None:
         help="do not download LivePortrait MLX .npz runtime weights",
     )
     parser.add_argument(
-        "--skip-mediapipe",
+        "--include-mediapipe",
         action="store_true",
-        help="do not download Google's MediaPipe face landmarker task model",
+        help="also download Google's MediaPipe face landmarker task model for legacy configs",
     )
     parser.add_argument(
         "--include-animal-xpose",
@@ -175,7 +175,7 @@ def main() -> None:
     try:
         if not args.skip_mlx_weights:
             download_mlx_weights(args.repo_id, checkpoints_dir, args.revision)
-        if not args.skip_mediapipe:
+        if args.include_mediapipe:
             download_mediapipe(checkpoints_dir)
         if args.include_animal_xpose:
             download_xpose(checkpoints_dir)

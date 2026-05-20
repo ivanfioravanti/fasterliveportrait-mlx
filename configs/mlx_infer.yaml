@@ -17,10 +17,11 @@ models:
     dtype: "fp32"  # tiny model, fp32 keeps quality and is already 2.8 ms
     model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
   face_analysis:
-    name: "MediaPipeFaceModel"
-    predict_type: "mp"
-    det_thresh: 0.15
-    model_path: "./checkpoints/mediapipe/face_landmarker.task"
+    name: "MlxFaceAnalysisModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
+    refine_iters: 1
   app_feat_extractor:
     name: "MlxAppearanceFeatureExtractorModel"
     predict_type: "mlx"
@@ -81,10 +82,11 @@ animal_models:
     dtype: "fp32"
     model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
   face_analysis:
-    name: "MediaPipeFaceModel"
-    predict_type: "mp"
-    det_thresh: 0.15
-    model_path: "./checkpoints/mediapipe/face_landmarker.task"
+    name: "MlxFaceAnalysisModel"
+    predict_type: "mlx"
+    dtype: "fp32"
+    model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
+    refine_iters: 1
 
 animal_xpose:
   model_path: "./checkpoints/liveportrait_animals/xpose.pth"

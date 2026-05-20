@@ -11,8 +11,6 @@ dependencies = [
     "ffmpeg-python",
     "gradio",
     "huggingface-hub",
-    "insightface",
-    "mediapipe",
     "misaki[en,ja,zh]",
     "mlx",
     "mlx-audio",

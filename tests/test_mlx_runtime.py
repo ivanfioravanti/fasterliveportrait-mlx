@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
@@ -24,7 +25,6 @@ HUMAN_RUNTIME_FILES = (
     ROOT / "checkpoints/liveportrait_mlx/stitching.npz",
     ROOT / "checkpoints/liveportrait_mlx/stitching_eye.npz",
     ROOT / "checkpoints/liveportrait_mlx/stitching_lip.npz",
-    ROOT / "checkpoints/mediapipe/face_landmarker.task",
 )
 
 ANIMAL_RUNTIME_FILES = HUMAN_RUNTIME_FILES + (
@@ -57,6 +57,7 @@ def test_mlx_config_has_no_runtime_ort_models():
     cfg = OmegaConf.load(CFG_PATH)
     allowed_model_names = {
         "MediaPipeFaceModel",
+        "MlxFaceAnalysisModel",
         "MlxAppearanceFeatureExtractorModel",
         "MlxLandmarkModel",
         "MlxMotionExtractorModel",
@@ -79,12 +80,16 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert cfg.animal_models.warping_spade.dtype == "bf16"
     assert cfg.animal_models.motion_extractor.dtype == "bf16"
     assert cfg.animal_models.app_feat_extractor.dtype == "bf16"
+    assert cfg.models.face_analysis.name == "MlxFaceAnalysisModel"
+    assert cfg.animal_models.face_analysis.name == "MlxFaceAnalysisModel"
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     runtime_dependencies = {dep.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0] for dep in pyproject["project"]["dependencies"]}
     assert "onnxruntime" not in runtime_dependencies
     assert "onnx" not in runtime_dependencies
     assert "kokoro" not in runtime_dependencies
+    assert "insightface" not in runtime_dependencies
+    assert "mediapipe" not in runtime_dependencies
     assert "mlx-audio" in runtime_dependencies
     assert "torchgeometry" not in runtime_dependencies
     assert "onnx" in pyproject["dependency-groups"]["convert"]
@@ -110,6 +115,24 @@ def test_importing_mlx_runtime_does_not_import_onnxruntime():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+def test_mlx_face_analysis_predicts_landmarks_without_mediapipe():
+    _require_files((ROOT / "assets/examples/source/s10.jpg", ROOT / "checkpoints/liveportrait_mlx/landmark.npz"))
+
+    from src.models.mlx_face_analysis_model import MlxFaceAnalysisModel
+
+    image = cv2.imread(str(ROOT / "assets/examples/source/s10.jpg"), cv2.IMREAD_COLOR)
+    assert image is not None
+
+    model = MlxFaceAnalysisModel(model_path=str(ROOT / "checkpoints/liveportrait_mlx/landmark.npz"), dtype="fp32")
+    faces = model.predict(image)
+
+    assert "mediapipe" not in sys.modules
+    assert len(faces) == 1
+    assert faces[0].shape == (203, 2)
+    assert faces[0].dtype == np.float32
+    assert np.isfinite(faces[0]).all()
 
 
 def test_mlx_audio_kokoro_voice_language_mapping():

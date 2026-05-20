@@ -109,7 +109,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 + ", ".join(missing)
                 + ". Text driving uses MLX-audio for TTS, but still needs JoyVASA to convert audio into motion. "
                 + "Install the temporary experimental assets with: "
-                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights --skip-mediapipe --include-joyvasa`.",
+                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights --include-joyvasa`.",
                 duration=8,
             )
 
