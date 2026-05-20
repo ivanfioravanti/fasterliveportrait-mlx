@@ -25,6 +25,17 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 4. Once the Python runtime is MLX-only, map the model graph and preprocessing contracts
    onto `mlx-swift`.
 
+## JoyVASA MLX Progress
+
+- Started the JoyVASA motion port with MLX equivalents for the diffusion schedule,
+  positional encoding, audio padding, alignment mask, Transformer decoder layer, and
+  denoising network.
+- Added PyTorch parity tests in `tests/test_mlx_joyvasa_motion_model.py` for each
+  migrated part. These tests use fixed inputs and copied PyTorch weights so future
+  migration steps can catch mathematical drift before replacing runtime paths.
+- Remaining JoyVASA work: port the audio encoder feature path, diffusion sampling loop,
+  checkpoint loading/export, and pipeline integration.
+
 ## Compatibility Policy
 
 Experimental compatibility paths may remain in Python while the MLX port is being

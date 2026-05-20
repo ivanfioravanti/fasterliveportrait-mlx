@@ -1,0 +1,187 @@
+import sys
+from pathlib import Path
+
+import mlx.core as mx
+import numpy as np
+import pytest
+import torch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+@pytest.mark.parametrize("mode", ("linear", "quadratic", "sigmoid", "cosine"))
+def test_mlx_diffusion_schedule_matches_torch(mode):
+    from src.models.JoyVASA.dit_talking_head import DiffusionSchedule
+    from src.models.mlx_joyvasa_motion_model import MlxDiffusionSchedule
+
+    torch_schedule = DiffusionSchedule(num_steps=12, mode=mode)
+    mlx_schedule = MlxDiffusionSchedule(num_steps=12, mode=mode)
+
+    for attr in ("betas", "alphas", "alpha_bars", "sigmas_flex", "sigmas_inflex"):
+        torch_values = getattr(torch_schedule, attr).detach().cpu().numpy()
+        mlx_values = np.array(getattr(mlx_schedule, attr))
+        np.testing.assert_allclose(mlx_values, torch_values, rtol=2e-4, atol=2e-6)
+
+    t = np.array([1, 5, 12], dtype=np.int64)
+    torch_sigmas = torch_schedule.get_sigmas(torch.from_numpy(t), flexibility=0.35).detach().cpu().numpy()
+    mlx_sigmas = np.array(mlx_schedule.get_sigmas(mx.array(t), flexibility=0.35))
+    np.testing.assert_allclose(mlx_sigmas, torch_sigmas, rtol=2e-4, atol=2e-6)
+
+
+def test_mlx_positional_encoding_matches_torch():
+    from src.models.JoyVASA.common import PositionalEncoding
+    from src.models.mlx_joyvasa_motion_model import MlxPositionalEncoding
+
+    x = np.arange(2 * 5 * 8, dtype=np.float32).reshape(2, 5, 8) / 100.0
+    torch_pe = PositionalEncoding(d_model=8, dropout=0.0, max_len=16).eval()
+    mlx_pe = MlxPositionalEncoding(d_model=8, max_len=16)
+
+    with torch.no_grad():
+        torch_out = torch_pe(torch.from_numpy(x)).numpy()
+    mlx_out = np.array(mlx_pe(mx.array(x)))
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize(
+    ("t", "s", "frame_width", "expansion"),
+    (
+        (5, 5, 1, 0),
+        (5, 10, 2, 1),
+        (7, 9, 1, 2),
+    ),
+)
+def test_mlx_enc_dec_mask_matches_torch(t, s, frame_width, expansion):
+    from src.models.JoyVASA.common import enc_dec_mask
+    from src.models.mlx_joyvasa_motion_model import mlx_enc_dec_mask
+
+    torch_mask = enc_dec_mask(t, s, frame_width=frame_width, expansion=expansion, device="cpu").numpy()
+    mlx_mask = np.array(mlx_enc_dec_mask(t, s, frame_width=frame_width, expansion=expansion))
+
+    np.testing.assert_array_equal(mlx_mask, torch_mask)
+
+
+@pytest.mark.parametrize("audio_len", (640, 719, 720, 721))
+def test_mlx_pad_audio_matches_torch(audio_len):
+    from src.models.JoyVASA.common import pad_audio
+    from src.models.mlx_joyvasa_motion_model import mlx_pad_audio
+
+    audio = np.linspace(-1.0, 1.0, audio_len, dtype=np.float32).reshape(1, audio_len)
+
+    torch_out = pad_audio(torch.from_numpy(audio)).numpy()
+    mlx_out = np.array(mlx_pad_audio(mx.array(audio)))
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=1e-6, atol=1e-7)
+
+
+def test_mlx_transformer_decoder_layer_matches_torch():
+    from src.models.JoyVASA.dit_talking_head import DenoisingNetwork
+    from src.models.mlx_joyvasa_motion_model import MlxDenoisingNetwork
+
+    torch.manual_seed(0)
+    rng = np.random.default_rng(7)
+    torch_model = DenoisingNetwork(
+        device="cpu",
+        motion_feat_dim=4,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_prev_motions=2,
+        n_motions=3,
+        n_diff_steps=6,
+    ).eval()
+    mlx_model = MlxDenoisingNetwork(
+        motion_feat_dim=4,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_prev_motions=2,
+        n_motions=3,
+        n_diff_steps=6,
+    )
+    mlx_model.load_pytorch_state_dict(torch_model.state_dict())
+
+    memory = rng.normal(size=(1, 5, 8)).astype(np.float32)
+    target = rng.normal(size=(1, 5, 8)).astype(np.float32)
+
+    with torch.no_grad():
+        torch_layer = torch_model.transformer.layers[0]
+        torch_out = torch_layer(
+            torch.from_numpy(target),
+            torch.from_numpy(memory),
+            memory_mask=torch_model.alignment_mask,
+        ).numpy()
+    mlx_out = np.array(mlx_model.layers[0](mx.array(target), mx.array(memory), mlx_model.alignment_mask))
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=2e-3, atol=2e-3)
+
+
+@pytest.mark.parametrize("use_indicator", (False, True))
+def test_mlx_denoising_network_matches_torch(use_indicator):
+    from src.models.JoyVASA.dit_talking_head import DenoisingNetwork
+    from src.models.mlx_joyvasa_motion_model import MlxDenoisingNetwork
+
+    torch.manual_seed(1)
+    rng = np.random.default_rng(11)
+    torch_model = DenoisingNetwork(
+        device="cpu",
+        motion_feat_dim=4,
+        use_indicator=use_indicator,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_prev_motions=2,
+        n_motions=3,
+        n_diff_steps=6,
+    ).eval()
+    mlx_model = MlxDenoisingNetwork(
+        motion_feat_dim=4,
+        use_indicator=use_indicator,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_prev_motions=2,
+        n_motions=3,
+        n_diff_steps=6,
+    )
+    mlx_model.load_pytorch_state_dict(torch_model.state_dict())
+
+    motion = rng.normal(size=(2, 3, 4)).astype(np.float32)
+    audio = rng.normal(size=(2, 3, 8)).astype(np.float32)
+    prev_motion = rng.normal(size=(2, 2, 4)).astype(np.float32)
+    prev_audio = rng.normal(size=(2, 2, 8)).astype(np.float32)
+    step = np.array([2, 5], dtype=np.int64)
+    indicator = rng.integers(0, 2, size=(2, 3)).astype(np.float32) if use_indicator else None
+
+    with torch.no_grad():
+        torch_out = torch_model(
+            torch.from_numpy(motion),
+            torch.from_numpy(audio),
+            torch.from_numpy(prev_motion),
+            torch.from_numpy(prev_audio),
+            torch.from_numpy(step),
+            torch.from_numpy(indicator) if indicator is not None else None,
+        ).numpy()
+    mlx_out = np.array(
+        mlx_model(
+            mx.array(motion),
+            mx.array(audio),
+            mx.array(prev_motion),
+            mx.array(prev_audio),
+            mx.array(step),
+            mx.array(indicator) if indicator is not None else None,
+        )
+    )
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=2e-3, atol=2e-3)
