@@ -82,11 +82,13 @@ animal_models:
     dtype: "fp32"
     model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
   face_analysis:
-    name: "MlxFaceAnalysisModel"
+    name: "MlxAnimalFaceAnalysisModel"
     predict_type: "mlx"
     dtype: "fp32"
     model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
     refine_iters: 1
+    min_face_size: 40
+    max_detector_dim: 960
 
 joyvasa_models:
   motion_mlx_model_path: "checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz"

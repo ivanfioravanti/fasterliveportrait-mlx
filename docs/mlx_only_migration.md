@@ -6,10 +6,10 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 
 ## Current Runtime Surface
 
-- MLX: human and animal LivePortrait core models, human/animal face-analysis
-  bootstrap, human landmark model, stitching, retargeting, MLX-audio Kokoro
-  text-to-speech, JoyVASA HuBERT audio features, and JoyVASA diffusion/motion
-  generation.
+- MLX: human and animal LivePortrait core models, human face-analysis bootstrap,
+  animal source face analysis, human landmark model, stitching, retargeting,
+  MLX-audio Kokoro text-to-speech, JoyVASA HuBERT audio features, and JoyVASA
+  diffusion/motion generation.
 - Conversion-only PyTorch: export scripts that read source PyTorch/Transformers
   checkpoints and write MLX `.npz` runtime weights.
 
@@ -39,8 +39,11 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 ## Animal Landmark MLX Progress
 
 - Removed XPose from the default animal runtime path.
-- Animal source preparation now uses the same MLX face-analysis bootstrap to define
-  the source crop, then runs the MLX animal LivePortrait core models.
+- Animal source preparation now uses `MlxAnimalFaceAnalysisModel` to define the
+  source crop, then runs the MLX animal LivePortrait core models.
+- `MlxAnimalFaceAnalysisModel` tries the MLX landmark bootstrap first and falls
+  back to OpenCV's packaged cat-face cascade to emit the 9-point crop-landmark
+  contract when the MLX bootstrap cannot lock on.
 - XPose runtime code and downloads have been removed.
 
 ## JoyVASA MLX Progress

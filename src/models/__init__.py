@@ -7,6 +7,7 @@ import importlib
 
 
 _MODEL_MODULES = {
+    "MlxAnimalFaceAnalysisModel": ".mlx_animal_face_analysis_model",
     "MlxFaceAnalysisModel": ".mlx_face_analysis_model",
     "MlxWarpingSpadeModel": ".mlx_warping_spade_model",
     "MlxMotionExtractorModel": ".mlx_motion_extractor_model",

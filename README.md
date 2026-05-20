@@ -17,7 +17,7 @@ Thanks to the authors of [FasterLivePortrait](https://github.com/warmshao/Faster
 Supported release surface:
 
 - Human image, video, and camera driving on Apple Silicon using the MLX LivePortrait core.
-- Animal image and video driving using the MLX LivePortrait animal core with the MLX landmark bootstrap.
+- Animal image and video driving using the MLX LivePortrait animal core with MLX animal face analysis.
 - MLX human face analysis and landmarks using the exported landmark `.npz` checkpoint.
 - Optional conversion and publishing tools for exporting MLX `.npz` weights from source checkpoints.
 
@@ -30,6 +30,7 @@ Supported release surface:
   - stitching and retargeting MLPs
 - The default human runtime path is MLX-only for LivePortrait core models, face analysis, landmarks, stitching, and retargeting. ONNX is kept only as an optional conversion-time dependency for exporting MLX `.npz` weights.
 - Human and driving face analysis use the MLX landmark checkpoint as a bootstrap/refiner. MediaPipe is no longer part of the default config.
+- Animal source analysis uses `MlxAnimalFaceAnalysisModel`: MLX landmark bootstrap first, then a no-PyTorch cat-face cascade fallback for crop landmarks when the bootstrap cannot lock on. XPose is no longer part of the default config.
 - Human MLX landmark and stitching weights load from exported `.npz` files at runtime.
 - Animal base models are configured for official LivePortrait animal v1.1 weights.
 - Runtime profiles are available for exact and faster approximate realtime paths.
@@ -110,14 +111,6 @@ uv run hf download KlingTeam/LivePortrait \
   --local-dir ./checkpoints
 ```
 
-Move those cached embeddings to the MLX animal checkpoint layout:
-
-```shell
-mkdir -p checkpoints/liveportrait_animals/clip_embedding
-cp checkpoints/liveportrait_animal_onnx/clip_embedding_9.pkl checkpoints/liveportrait_animals/clip_embedding/clip_embedding_9.pkl
-cp checkpoints/liveportrait_animal_onnx/clip_embedding_68.pkl checkpoints/liveportrait_animals/clip_embedding/clip_embedding_68.pkl
-```
-
 Export the MLX runtime weights after the source checkpoints are in place:
 
 ```shell
@@ -167,6 +160,7 @@ Press `q` in the render window to exit.
 The MLX config follows the official LivePortrait quality defaults where they help this fork:
 
 - `MlxFaceAnalysisModel` runs the exported MLX landmark checkpoint on the full frame, then refines once on a face crop. It expects a visible human face in the source/driving frame; use Animal mode for animal inputs.
+- `MlxAnimalFaceAnalysisModel` uses the same MLX bootstrap for animal source crops and falls back to a packaged cat-face cascade that emits the 9-point crop layout used by the animal pipeline.
 - `driving_option: expression-friendly` scales motion using source/driving keypoint geometry.
 - `flag_stabilize_driving_crop: true` keeps webcam framing centered without smile-driven zoom jitter.
 - `flag_lock_driving_crop_scale: true` locks the camera crop zoom after the first detected frame.

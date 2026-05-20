@@ -53,6 +53,7 @@ def _assert_non_black_rgb(image, *, label):
 def test_mlx_config_has_no_runtime_ort_models():
     cfg = OmegaConf.load(CFG_PATH)
     allowed_model_names = {
+        "MlxAnimalFaceAnalysisModel",
         "MlxFaceAnalysisModel",
         "MlxAppearanceFeatureExtractorModel",
         "MlxLandmarkModel",
@@ -77,7 +78,7 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert cfg.animal_models.motion_extractor.dtype == "bf16"
     assert cfg.animal_models.app_feat_extractor.dtype == "bf16"
     assert cfg.models.face_analysis.name == "MlxFaceAnalysisModel"
-    assert cfg.animal_models.face_analysis.name == "MlxFaceAnalysisModel"
+    assert cfg.animal_models.face_analysis.name == "MlxAnimalFaceAnalysisModel"
     assert "animal_xpose" not in cfg
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -131,6 +132,38 @@ def test_mlx_face_analysis_predicts_landmarks_without_mediapipe():
     assert "mediapipe" not in sys.modules
     assert len(faces) == 1
     assert faces[0].shape == (203, 2)
+    assert faces[0].dtype == np.float32
+    assert np.isfinite(faces[0]).all()
+
+
+def test_mlx_animal_face_analysis_fallback_landmarks_match_crop_contract():
+    from src.models.mlx_animal_face_analysis_model import MlxAnimalFaceAnalysisModel
+
+    landmarks = MlxAnimalFaceAnalysisModel._landmarks_from_bbox((10, 20, 100, 80))
+
+    assert landmarks.shape == (9, 2)
+    assert landmarks.dtype == np.float32
+    assert np.isfinite(landmarks).all()
+    assert np.all(landmarks[:, 0] >= 10)
+    assert np.all(landmarks[:, 0] <= 110)
+    assert np.all(landmarks[:, 1] >= 20)
+    assert np.all(landmarks[:, 1] <= 100)
+
+
+def test_mlx_animal_face_analysis_predicts_landmarks_without_xpose():
+    _require_files((ROOT / "assets/examples/source/s39.jpg", ROOT / "checkpoints/liveportrait_mlx/landmark.npz"))
+
+    from src.models.mlx_animal_face_analysis_model import MlxAnimalFaceAnalysisModel
+
+    image = cv2.imread(str(ROOT / "assets/examples/source/s39.jpg"), cv2.IMREAD_COLOR)
+    assert image is not None
+
+    model = MlxAnimalFaceAnalysisModel(model_path=str(ROOT / "checkpoints/liveportrait_mlx/landmark.npz"), dtype="fp32")
+    faces = model.predict(image)
+
+    assert len(faces) == 1
+    assert faces[0].shape[1] == 2
+    assert faces[0].shape[0] in {9, 203}
     assert faces[0].dtype == np.float32
     assert np.isfinite(faces[0]).all()
 
