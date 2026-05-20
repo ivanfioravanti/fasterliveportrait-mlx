@@ -18,7 +18,9 @@ sys.path.append(".")
 
 JOYVASA_REQUIRED_ASSETS = (
     Path("checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese.pt"),
+    Path("checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz"),
     Path("checkpoints/chinese-hubert-base"),
+    Path("checkpoints/JoyVASA/audio_encoder/hubert_chinese_mlx.npz"),
     Path("checkpoints/JoyVASA/motion_template/motion_template.pkl"),
     Path("assets/examples/driving/a-01.wav"),
 )
@@ -42,7 +44,9 @@ def test_joyvasa_pipeline():
 
     pipe = JoyVASAAudio2MotionPipeline(
         motion_model_path="checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese.pt",
+        motion_mlx_model_path="checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
         audio_model_path="checkpoints/chinese-hubert-base",
+        audio_mlx_model_path="checkpoints/JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
         motion_template_path="checkpoints/JoyVASA/motion_template/motion_template.pkl")
 
     audio_path = "assets/examples/driving/a-01.wav"

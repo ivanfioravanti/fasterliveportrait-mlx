@@ -22,6 +22,7 @@ from scipy.signal import resample_poly
 from ..models.JoyVASA.dit_talking_head import DitTalkingHead
 from ..models.JoyVASA.common import pad_audio
 from ..models.JoyVASA.helper import NullableArgs
+from ..models.mlx_joyvasa_audio_model import load_mlx_joyvasa_audio_npz
 from ..models.mlx_joyvasa_motion_model import load_mlx_joyvasa_motion_npz
 from ..utils import utils
 
@@ -90,39 +91,56 @@ class JoyVASAAudio2MotionPipeline:
         motion_model_path = kwargs.get("motion_model_path", "")
         motion_mlx_model_path = kwargs.get("motion_mlx_model_path", "")
         audio_model_path = kwargs.get("audio_model_path", "")
+        audio_mlx_model_path = kwargs.get("audio_mlx_model_path", "")
         motion_template_path = kwargs.get("motion_template_path", "")
-        # JoyVASA checkpoints store argparse.Namespace metadata alongside tensors.
-        # PyTorch 2.6+ defaults torch.load(weights_only=True), which rejects that
-        # metadata, so this experimental path must opt into full checkpoint loading.
-        model_data = torch.load(motion_model_path, map_location="cpu", weights_only=False)
-        model_args = NullableArgs(model_data['args'])
         if motion_mlx_model_path:
             if not os.path.exists(motion_mlx_model_path):
                 raise FileNotFoundError(
                     f"JoyVASA MLX motion weights not found: {motion_mlx_model_path}. "
                     "Run `uv run python scripts/export_mlx_weights.py --include-joyvasa`."
                 )
-            model = JoyVASAAudioFeatureExtractor(
-                audio_model=model_args.audio_model,
-                audio_encoder_path=audio_model_path,
-                feature_dim=model_args.feature_dim,
-                fps=model_args.fps,
-                n_motions=model_args.n_motions,
-            )
-            audio_state = {
-                key: value
-                for key, value in model_data["model"].items()
-                if key.startswith("audio_feature_map.")
-            }
-            model.load_state_dict(audio_state, strict=False)
-            model.to(self.device, dtype=self.dtype)
-            model.eval()
             self.motion_generator = load_mlx_joyvasa_motion_npz(
                 motion_mlx_model_path,
                 cfg_mode=kwargs.get("cfg_mode", "incremental"),
             )
             self.motion_backend = "mlx"
+            if audio_mlx_model_path:
+                if not os.path.exists(audio_mlx_model_path):
+                    raise FileNotFoundError(
+                        f"JoyVASA MLX audio weights not found: {audio_mlx_model_path}. "
+                        "Run `uv run python scripts/export_mlx_weights.py --include-joyvasa`."
+                    )
+                model = load_mlx_joyvasa_audio_npz(audio_mlx_model_path)
+                self.audio_backend = "mlx"
+                model_args = None
+            else:
+                # JoyVASA checkpoints store argparse.Namespace metadata alongside tensors.
+                # PyTorch 2.6+ defaults torch.load(weights_only=True), which rejects that
+                # metadata, so this fallback path must opt into full checkpoint loading.
+                model_data = torch.load(motion_model_path, map_location="cpu", weights_only=False)
+                model_args = NullableArgs(model_data['args'])
+                model = JoyVASAAudioFeatureExtractor(
+                    audio_model=model_args.audio_model,
+                    audio_encoder_path=audio_model_path,
+                    feature_dim=model_args.feature_dim,
+                    fps=model_args.fps,
+                    n_motions=model_args.n_motions,
+                )
+                audio_state = {
+                    key: value
+                    for key, value in model_data["model"].items()
+                    if key.startswith("audio_feature_map.")
+                }
+                model.load_state_dict(audio_state, strict=False)
+                model.to(self.device, dtype=self.dtype)
+                model.eval()
+                self.audio_backend = "torch"
         else:
+            # JoyVASA checkpoints store argparse.Namespace metadata alongside tensors.
+            # PyTorch 2.6+ defaults torch.load(weights_only=True), which rejects that
+            # metadata, so this fallback path must opt into full checkpoint loading.
+            model_data = torch.load(motion_model_path, map_location="cpu", weights_only=False)
+            model_args = NullableArgs(model_data['args'])
             model = DitTalkingHead(motion_feat_dim=model_args.motion_feat_dim,
                                    device=self.device,
                                    n_motions=model_args.n_motions,
@@ -137,18 +155,31 @@ class JoyVASAAudio2MotionPipeline:
             model.eval()
             self.motion_generator = model
             self.motion_backend = "torch"
+            self.audio_backend = "torch"
 
         # Restore the original PosixPath if it was changed
         if os.name == 'nt':
             pathlib.PosixPath = temp
 
         self.audio_feature_extractor = model
-        self.n_motions = model_args.n_motions
-        self.n_prev_motions = model_args.n_prev_motions
-        self.fps = model_args.fps
+        self.n_motions = self.motion_generator.n_motions if self.motion_backend == "mlx" else model_args.n_motions
+        self.n_prev_motions = (
+            self.motion_generator.n_prev_motions if self.motion_backend == "mlx" else model_args.n_prev_motions
+        )
+        self.fps = self.motion_generator.fps if self.motion_backend == "mlx" else model_args.fps
+        if self.motion_backend == "mlx":
+            if model.n_motions != self.n_motions:
+                raise ValueError(
+                    f"JoyVASA audio/motion n_motions mismatch: {model.n_motions} != {self.n_motions}"
+                )
+            if model.audio_feature_map.weight.shape[0] != self.motion_generator.feature_dim:
+                raise ValueError(
+                    "JoyVASA audio/motion feature_dim mismatch: "
+                    f"{model.audio_feature_map.weight.shape[0]} != {self.motion_generator.feature_dim}"
+                )
         self.audio_unit = 16000. / self.fps  # num of samples per frame
         self.n_audio_samples = round(self.audio_unit * self.n_motions)
-        self.pad_mode = model_args.pad_mode
+        self.pad_mode = getattr(model, "pad_mode", None) or model_args.pad_mode
         self.use_indicator = (
             bool(self.motion_generator.denoising_net.use_indicator)
             if self.motion_backend == "mlx"
@@ -214,7 +245,12 @@ class JoyVASAAudio2MotionPipeline:
         if sample_rate != 16000:
             gcd = math.gcd(sample_rate, 16000)
             audio_np = resample_poly(audio_np, 16000 // gcd, sample_rate // gcd)
-        audio = torch.from_numpy(audio_np).to(self.device, dtype=self.dtype)
+        use_mlx_audio = self.motion_backend == "mlx" and self.audio_backend == "mlx"
+        audio = (
+            audio_np.astype(np.float32)
+            if use_mlx_audio
+            else torch.from_numpy(audio_np).to(self.device, dtype=self.dtype)
+        )
         # audio = F.pad(audio, (1280, 640), "constant", 0)
         # audio_mean, audio_std = torch.mean(audio), torch.std(audio)
         # audio = (audio - audio_mean) / (audio_std + 1e-5)
@@ -237,7 +273,15 @@ class JoyVASAAudio2MotionPipeline:
                 padding_value = audio[-1]
             else:
                 raise ValueError(f'Unknown pad mode: {self.pad_mode}')
-            audio = F.pad(audio, (0, n_padding_audio_samples), value=padding_value)
+            if use_mlx_audio:
+                audio = np.pad(
+                    audio,
+                    (0, n_padding_audio_samples),
+                    mode="constant",
+                    constant_values=float(padding_value),
+                )
+            else:
+                audio = F.pad(audio, (0, n_padding_audio_samples), value=padding_value)
 
         # generate motions
         coef_list = []
@@ -247,10 +291,14 @@ class JoyVASAAudio2MotionPipeline:
         for i in range(0, n_subdivision):
             start_idx = i * stride
             end_idx = start_idx + self.n_motions
-            indicator = torch.ones((1, self.n_motions)).to(self.device) if self.use_indicator else None
+            if self.use_indicator and use_mlx_audio:
+                indicator = np.ones((1, self.n_motions), dtype=np.float32)
+            else:
+                indicator = torch.ones((1, self.n_motions)).to(self.device) if self.use_indicator else None
             if indicator is not None and i == n_subdivision - 1 and n_padding_frames > 0:
                 indicator[:, -n_padding_frames:] = 0
-            audio_in = audio[round(start_idx * self.audio_unit):round(end_idx * self.audio_unit)].unsqueeze(0)
+            audio_slice = audio[round(start_idx * self.audio_unit):round(end_idx * self.audio_unit)]
+            audio_in = audio_slice[None, :] if use_mlx_audio else audio_slice.unsqueeze(0)
 
             if self.motion_backend == "mlx":
                 motion_feat, noise, prev_audio_feat = self._sample_mlx_motion(

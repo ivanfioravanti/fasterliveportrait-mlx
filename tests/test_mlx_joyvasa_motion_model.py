@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import torch
 import torch.nn as torch_nn
+import torch.nn.functional as torch_f
+from transformers import HubertConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +57,34 @@ def _make_torch_motion_model(
     )
     torch_model.diffusion_sched = DiffusionSchedule(n_diff_steps, "cosine")
     return torch_model.eval()
+
+
+def _tiny_hubert_config():
+    config = HubertConfig(
+        conv_dim=(4, 4),
+        conv_kernel=(3, 3),
+        conv_stride=(2, 2),
+        conv_bias=False,
+        feat_extract_norm="group",
+        feat_proj_layer_norm=True,
+        feat_proj_dropout=0.0,
+        hidden_size=8,
+        intermediate_size=16,
+        num_attention_heads=2,
+        num_hidden_layers=1,
+        num_conv_pos_embeddings=4,
+        num_conv_pos_embedding_groups=2,
+        hidden_dropout=0.0,
+        activation_dropout=0.0,
+        attention_dropout=0.0,
+        layerdrop=0.0,
+        apply_spec_augment=False,
+        mask_time_prob=0.0,
+        mask_feature_prob=0.0,
+        layer_norm_eps=1e-5,
+    )
+    config._attn_implementation = "eager"
+    return config
 
 
 @pytest.mark.parametrize("mode", ("linear", "quadratic", "sigmoid", "cosine"))
@@ -120,6 +150,142 @@ def test_mlx_pad_audio_matches_torch(audio_len):
     mlx_out = np.array(mlx_pad_audio(mx.array(audio)))
 
     np.testing.assert_allclose(mlx_out, torch_out, rtol=1e-6, atol=1e-7)
+
+
+def test_mlx_hubert_model_matches_torch():
+    from src.models.JoyVASA.hubert import HubertModel
+    from src.models.mlx_joyvasa_audio_model import MlxHubertConfig, MlxHubertModel
+
+    torch.manual_seed(101)
+    rng = np.random.default_rng(101)
+    config = _tiny_hubert_config()
+    torch_model = HubertModel(config).eval()
+    mlx_model = MlxHubertModel(MlxHubertConfig.from_dict(config.to_dict()))
+    mlx_model.load_pytorch_state_dict(torch_model.state_dict())
+
+    audio = rng.normal(size=(2, 64)).astype(np.float32)
+
+    with torch.no_grad():
+        torch_out = torch_model(torch.from_numpy(audio), output_fps=25, frame_num=6).last_hidden_state.numpy()
+    mlx_out = np.array(mlx_model(mx.array(audio), output_fps=25, frame_num=6))
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=2e-3, atol=2e-3)
+
+
+def test_mlx_joyvasa_audio_feature_extractor_matches_torch():
+    from src.models.JoyVASA.hubert import HubertModel
+    from src.models.mlx_joyvasa_audio_model import MlxHubertConfig, MlxJoyVASAAudioFeatureExtractor
+
+    torch.manual_seed(103)
+    rng = np.random.default_rng(103)
+    config = _tiny_hubert_config()
+    torch_hubert = HubertModel(config).eval()
+    torch_audio_feature_map = torch_nn.Linear(config.hidden_size, 5).eval()
+    mlx_model = MlxJoyVASAAudioFeatureExtractor(
+        MlxHubertConfig.from_dict(config.to_dict()),
+        feature_dim=5,
+        fps=25,
+        n_motions=4,
+    )
+    mlx_model.load_pytorch_state_dicts(
+        torch_hubert.state_dict(),
+        {
+            "audio_feature_map.weight": torch_audio_feature_map.weight,
+            "audio_feature_map.bias": torch_audio_feature_map.bias,
+        },
+    )
+
+    audio = rng.normal(size=(1, 64)).astype(np.float32)
+
+    with torch.no_grad():
+        hidden_states = torch_hubert(torch.from_numpy(audio), output_fps=25, frame_num=8).last_hidden_state
+        hidden_states = hidden_states.transpose(1, 2)
+        hidden_states = torch_f.interpolate(hidden_states, size=4, align_corners=False, mode="linear")
+        hidden_states = hidden_states.transpose(1, 2)
+        torch_out = torch_audio_feature_map(hidden_states).numpy()
+    mlx_out = np.array(mlx_model(mx.array(audio), frame_num=4))
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=2e-3, atol=2e-3)
+
+
+def test_mlx_joyvasa_audio_feature_extractor_pad_matches_torch():
+    from src.models.JoyVASA.common import pad_audio
+    from src.models.JoyVASA.hubert import HubertModel
+    from src.models.mlx_joyvasa_audio_model import MlxHubertConfig, MlxJoyVASAAudioFeatureExtractor
+
+    torch.manual_seed(107)
+    rng = np.random.default_rng(107)
+    config = _tiny_hubert_config()
+    torch_hubert = HubertModel(config).eval()
+    torch_audio_feature_map = torch_nn.Linear(config.hidden_size, 5).eval()
+    mlx_model = MlxJoyVASAAudioFeatureExtractor(
+        MlxHubertConfig.from_dict(config.to_dict()),
+        feature_dim=5,
+        fps=25,
+        n_motions=4,
+    )
+    mlx_model.load_pytorch_state_dicts(
+        torch_hubert.state_dict(),
+        {
+            "audio_feature_map.weight": torch_audio_feature_map.weight,
+            "audio_feature_map.bias": torch_audio_feature_map.bias,
+        },
+    )
+
+    audio = rng.normal(size=(1, 63)).astype(np.float32)
+
+    with torch.no_grad():
+        torch_audio = pad_audio(torch.from_numpy(audio))
+        hidden_states = torch_hubert(torch_audio, output_fps=25, frame_num=8).last_hidden_state
+        hidden_states = hidden_states.transpose(1, 2)
+        hidden_states = torch_f.interpolate(hidden_states, size=4, align_corners=False, mode="linear")
+        hidden_states = hidden_states.transpose(1, 2)
+        torch_out = torch_audio_feature_map(hidden_states).numpy()
+    mlx_out = np.array(mlx_model.extract_audio_feature(mx.array(audio), frame_num=4))
+
+    np.testing.assert_allclose(mlx_out, torch_out, rtol=2e-3, atol=2e-3)
+
+
+def test_mlx_joyvasa_audio_npz_roundtrip(tmp_path):
+    from src.models.JoyVASA.hubert import HubertModel
+    from src.models.mlx_joyvasa_audio_model import (
+        MlxHubertConfig,
+        MlxJoyVASAAudioFeatureExtractor,
+        load_mlx_joyvasa_audio_npz,
+        save_mlx_joyvasa_audio_npz,
+    )
+
+    torch.manual_seed(109)
+    rng = np.random.default_rng(109)
+    config = _tiny_hubert_config()
+    torch_hubert = HubertModel(config).eval()
+    torch_audio_feature_map = torch_nn.Linear(config.hidden_size, 5).eval()
+    mlx_model = MlxJoyVASAAudioFeatureExtractor(
+        MlxHubertConfig.from_dict(config.to_dict()),
+        feature_dim=5,
+        fps=25,
+        n_motions=4,
+    )
+    mlx_model.load_pytorch_state_dicts(
+        torch_hubert.state_dict(),
+        {
+            "audio_feature_map.weight": torch_audio_feature_map.weight,
+            "audio_feature_map.bias": torch_audio_feature_map.bias,
+        },
+    )
+
+    path = tmp_path / "joyvasa_audio.npz"
+    save_mlx_joyvasa_audio_npz(path, mlx_model, pad_mode="replicate")
+    loaded = load_mlx_joyvasa_audio_npz(path)
+    audio = rng.normal(size=(1, 64)).astype(np.float32)
+
+    np.testing.assert_allclose(
+        np.array(loaded(mx.array(audio), frame_num=4)),
+        np.array(mlx_model(mx.array(audio), frame_num=4)),
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    assert loaded.pad_mode == "replicate"
 
 
 def test_mlx_transformer_decoder_layer_matches_torch():

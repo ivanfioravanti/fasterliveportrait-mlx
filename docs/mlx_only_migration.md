@@ -7,11 +7,12 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 ## Current Runtime Surface
 
 - MLX: human and animal LivePortrait core models, human landmark model, stitching,
-  retargeting, MLX-audio Kokoro text-to-speech, and JoyVASA diffusion/motion generation.
+  retargeting, MLX-audio Kokoro text-to-speech, JoyVASA HuBERT audio features,
+  and JoyVASA diffusion/motion generation.
 - Native/non-MLX: MediaPipe human face landmarks.
-- PyTorch compatibility: XPose animal landmarks and JoyVASA HuBERT audio feature extraction.
-- Conversion-only PyTorch: export scripts that read source `.pth` checkpoints and write
-  MLX `.npz` runtime weights.
+- PyTorch compatibility: XPose animal landmarks.
+- Conversion-only PyTorch: export scripts that read source PyTorch/Transformers
+  checkpoints and write MLX `.npz` runtime weights.
 
 ## Migration Order
 
@@ -37,12 +38,17 @@ Transformers, or Python-only model path as a temporary compatibility layer.
   reads the trusted PyTorch checkpoint once and writes runtime weights that can be
   loaded without importing torch.
 - Integrated the exported MLX JoyVASA motion model into the audio/text driving pipeline.
-  The temporary PyTorch portion is now limited to HuBERT feature extraction.
+  The temporary PyTorch fallback remains available only when `audio_mlx_model_path` is not set.
+- Added `.npz` export/load support for the configured JoyVASA HuBERT audio feature path,
+  including the audio feature projection and runtime metadata.
+- Integrated the exported MLX HuBERT/audio feature path into the pipeline so configured
+  JoyVASA audio/text driving uses MLX for both audio features and diffusion/motion.
 - Added PyTorch parity tests in `tests/test_mlx_joyvasa_motion_model.py` for each
   migrated part. These tests use fixed inputs and copied PyTorch weights so future
   migration steps can catch mathematical drift before replacing runtime paths.
 - Export command: `uv run python scripts/export_mlx_weights.py --include-joyvasa`.
-- Remaining JoyVASA work: port the audio encoder feature path.
+- Remaining JoyVASA work: broaden coverage beyond the configured Chinese HuBERT checkpoint
+  if other upstream JoyVASA audio encoders are needed.
 
 ## Compatibility Policy
 
