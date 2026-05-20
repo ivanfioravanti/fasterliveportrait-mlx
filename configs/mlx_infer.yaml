@@ -95,6 +95,11 @@ joyvasa_models:
   audio_model_path: "checkpoints/chinese-hubert-base"
   motion_template_path: "checkpoints/JoyVASA/motion_template/motion_template.pkl"
 
+text_to_speech:
+  model_id: "mlx-community/Kokoro-82M-bf16"
+  default_voice: "af_heart"
+  speed: 1.0
+
 crop_params:
   src_dsize: 512
   src_scale: 2.3

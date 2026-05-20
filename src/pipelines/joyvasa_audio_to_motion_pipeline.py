@@ -8,13 +8,14 @@
 import math
 
 import torch
-import torchaudio
 import numpy as np
 import torch.nn.functional as F
 import pickle
 from tqdm import tqdm
 import pathlib
 import os
+import soundfile as sf
+from scipy.signal import resample_poly
 
 from ..models.JoyVASA.dit_talking_head import DitTalkingHead
 from ..models.JoyVASA.helper import NullableArgs
@@ -35,9 +36,13 @@ class JoyVASAAudio2MotionPipeline:
         motion_model_path = kwargs.get("motion_model_path", "")
         audio_model_path = kwargs.get("audio_model_path", "")
         motion_template_path = kwargs.get("motion_template_path", "")
-        model_data = torch.load(motion_model_path, map_location="cpu")
+        # JoyVASA checkpoints store argparse.Namespace metadata alongside tensors.
+        # PyTorch 2.6+ defaults torch.load(weights_only=True), which rejects that
+        # metadata, so this experimental path must opt into full checkpoint loading.
+        model_data = torch.load(motion_model_path, map_location="cpu", weights_only=False)
         model_args = NullableArgs(model_data['args'])
         model = DitTalkingHead(motion_feat_dim=model_args.motion_feat_dim,
+                               device=self.device,
                                n_motions=model_args.n_motions,
                                n_prev_motions=model_args.n_prev_motions,
                                feature_dim=model_args.feature_dim,
@@ -70,14 +75,12 @@ class JoyVASAAudio2MotionPipeline:
     @torch.inference_mode()
     def gen_motion_sequence(self, audio_path, **kwargs):
         # preprocess audio
-        audio, sample_rate = torchaudio.load(audio_path)
+        audio_np, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+        audio_np = audio_np.mean(axis=1)
         if sample_rate != 16000:
-            audio = torchaudio.functional.resample(
-                audio,
-                orig_freq=sample_rate,
-                new_freq=16000,
-            )
-        audio = audio.mean(0).to(self.device, dtype=self.dtype)
+            gcd = math.gcd(sample_rate, 16000)
+            audio_np = resample_poly(audio_np, 16000 // gcd, sample_rate // gcd)
+        audio = torch.from_numpy(audio_np).to(self.device, dtype=self.dtype)
         # audio = F.pad(audio, (1280, 640), "constant", 0)
         # audio_mean, audio_std = torch.mean(audio), torch.std(audio)
         # audio = (audio - audio_mean) / (audio_std + 1e-5)

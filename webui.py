@@ -3,13 +3,12 @@
 """
 The entrance of the gradio
 """
-import os
-
 import gradio as gr
 import os.path as osp
 from omegaconf import OmegaConf
 
 from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
+from src.pipelines.mlx_audio_tts import MLX_AUDIO_KOKORO_VOICES
 
 
 def load_description(fp):
@@ -135,15 +134,9 @@ with gr.Blocks() as demo:
                 with gr.Accordion(open=True, label="Driving Text"):
                     driving_text_input = gr.Textbox(value="Hi, I am created by Faster LivePortrait!",
                                                     label="Driving Text")
-                    voice_dir = "checkpoints/Kokoro-82M/voices/"
-                    voice_names = (
-                        [os.path.splitext(vname)[0] for vname in os.listdir(voice_dir) if vname.endswith(".pt")]
-                        if os.path.isdir(voice_dir)
-                        else []
-                    )
                     voice_name = gr.Dropdown(
-                        choices=voice_names,
-                        value='af_heart' if 'af_heart' in voice_names else (voice_names[0] if voice_names else None),
+                        choices=list(MLX_AUDIO_KOKORO_VOICES),
+                        value='af_heart',
                         label="Voice Name")
 
             # with gr.Accordion(open=False, label="Animation Instructions"):

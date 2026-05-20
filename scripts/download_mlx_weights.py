@@ -33,6 +33,19 @@ XPOSE_ALLOW_PATTERNS = (
     "liveportrait_animals/xpose.pth",
 )
 
+JOYVASA_REPO = "jdh-algo/JoyVASA"
+JOYVASA_ALLOW_PATTERNS = (
+    "motion_generator/motion_generator_hubert_chinese.pt",
+    "motion_template/motion_template.pkl",
+)
+
+CHINESE_HUBERT_REPO = "TencentGameMate/chinese-hubert-base"
+CHINESE_HUBERT_ALLOW_PATTERNS = (
+    "config.json",
+    "preprocessor_config.json",
+    "pytorch_model.bin",
+)
+
 ANIMAL_EMBEDDING_PATTERNS = (
     "liveportrait_animal_onnx/clip_embedding_9.pkl",
     "liveportrait_animal_onnx/clip_embedding_68.pkl",
@@ -92,11 +105,35 @@ def download_xpose(checkpoints_dir: Path) -> None:
         print(f"wrote {dst}")
 
 
+def download_joyvasa(checkpoints_dir: Path) -> None:
+    print(
+        "downloading JoyVASA assets. Note: JoyVASA audio/text driving is "
+        "experimental in this MLX release and still runs through PyTorch."
+    )
+    snapshot_download(
+        repo_id=JOYVASA_REPO,
+        repo_type="model",
+        local_dir=checkpoints_dir / "JoyVASA",
+        allow_patterns=list(JOYVASA_ALLOW_PATTERNS),
+    )
+    snapshot_download(
+        repo_id=CHINESE_HUBERT_REPO,
+        repo_type="model",
+        local_dir=checkpoints_dir / "chinese-hubert-base",
+        allow_patterns=list(CHINESE_HUBERT_ALLOW_PATTERNS),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download FasterLivePortrait-MLX runtime assets.")
     parser.add_argument("--repo-id", default=DEFAULT_MLX_REPO, help="HF repo containing converted MLX .npz weights")
     parser.add_argument("--revision", default=None, help="optional HF revision for the MLX weights repo")
     parser.add_argument("--checkpoints-dir", default="checkpoints", help="local checkpoint root")
+    parser.add_argument(
+        "--skip-mlx-weights",
+        action="store_true",
+        help="do not download LivePortrait MLX .npz runtime weights",
+    )
     parser.add_argument(
         "--skip-mediapipe",
         action="store_true",
@@ -107,15 +144,23 @@ def main() -> None:
         action="store_true",
         help="also download XPose assets for animal mode; XPose is non-commercial research only",
     )
+    parser.add_argument(
+        "--include-joyvasa",
+        action="store_true",
+        help="also download experimental JoyVASA audio-to-motion assets for audio/text driving",
+    )
     args = parser.parse_args()
 
     checkpoints_dir = Path(args.checkpoints_dir)
     try:
-        download_mlx_weights(args.repo_id, checkpoints_dir, args.revision)
+        if not args.skip_mlx_weights:
+            download_mlx_weights(args.repo_id, checkpoints_dir, args.revision)
         if not args.skip_mediapipe:
             download_mediapipe(checkpoints_dir)
         if args.include_animal_xpose:
             download_xpose(checkpoints_dir)
+        if args.include_joyvasa:
+            download_joyvasa(checkpoints_dir)
     except Exception as exc:
         print(f"download failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

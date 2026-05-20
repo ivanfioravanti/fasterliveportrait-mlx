@@ -13,12 +13,12 @@ import pickle
 import numpy as np
 from .faster_live_portrait_pipeline import FasterLivePortraitPipeline
 from .joyvasa_audio_to_motion_pipeline import JoyVASAAudio2MotionPipeline
+from .mlx_audio_tts import MLX_AUDIO_KOKORO_MODEL, MLXAudioTextToSpeech
 from ..utils.utils import video_has_audio
 from ..utils.utils import resize_to_limit, prepare_paste_back, transform_keypoint
-from ..utils.crop import crop_image, paste_back_pytorch
+from ..utils.crop import crop_image, paste_back_numpy
 from src.utils import utils
 import platform
-import torch
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"
@@ -60,7 +60,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     def __init__(self, cfg, **kwargs):
         super(GradioLivePortraitPipeline, self).__init__(cfg, **kwargs)
         self.joyvasa_pipe = None
-        self.kokoro_model = None
+        self.text_to_speech = None
 
     @staticmethod
     def _video_outputs(video_path, video_path_concat):
@@ -79,6 +79,23 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             gr.update(visible=True, value=image_path),
             gr.update(visible=True, value=image_path_concat),
         )
+
+    def _require_joyvasa_assets(self):
+        required_paths = (
+            self.cfg.joyvasa_models.motion_model_path,
+            self.cfg.joyvasa_models.audio_model_path,
+            self.cfg.joyvasa_models.motion_template_path,
+        )
+        missing = [path for path in required_paths if not os.path.exists(path)]
+        if missing:
+            raise gr.Error(
+                "JoyVASA audio driving assets are not installed. Missing: "
+                + ", ".join(missing)
+                + ". Text driving uses MLX-audio for TTS, but still needs JoyVASA to convert audio into motion. "
+                + "Install the temporary experimental assets with: "
+                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights --skip-mediapipe --include-joyvasa`.",
+                duration=8,
+            )
 
     def execute_video(
             self,
@@ -409,6 +426,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         os.makedirs(save_dir, exist_ok=True)
 
         if self.joyvasa_pipe is None:
+            self._require_joyvasa_assets()
             self.joyvasa_pipe = JoyVASAAudio2MotionPipeline(motion_model_path=self.cfg.joyvasa_models.motion_model_path,
                                                             audio_model_path=self.cfg.joyvasa_models.audio_model_path,
                                                             motion_template_path=self.cfg.joyvasa_models.motion_template_path,
@@ -444,47 +462,23 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 raise gr.Error(f"Error in processing source:{source_path} 💥!", duration=5)
         save_dir = kwargs.get("save_dir", f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")
         os.makedirs(save_dir, exist_ok=True)
-        # TODO: make it better
-        import platform
-        if platform.system() == "Windows":
-            # refer: https://huggingface.co/hexgrad/Kokoro-82M/discussions/12
-            # if you install in different path, remember to change below envs
-            os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
-            os.environ["PHONEMIZER_ESPEAK_PATH"] = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
-        kokoro_dir = "checkpoints/Kokoro-82M"
-        voice_path = os.path.join(kokoro_dir, "voices")
-        if (
-            not voice_name
-            or not os.path.exists(os.path.join(kokoro_dir, "config.json"))
-            or not os.path.exists(os.path.join(kokoro_dir, "kokoro-v1_0.pth"))
-            or not os.path.isdir(voice_path)
-        ):
-            raise gr.Error(
-                "Kokoro text driving assets are not installed. Use audio, video, image, or pickle driving, "
-                "or download checkpoints/Kokoro-82M before using Driving Text.",
-                duration=5,
+        tts_cfg = self.cfg.get("text_to_speech", {})
+        model_id = tts_cfg.get("model_id", MLX_AUDIO_KOKORO_MODEL)
+        speed = float(tts_cfg.get("speed", 1.0))
+        voice_name = voice_name or tts_cfg.get("default_voice", "af_heart")
+        if self.text_to_speech is None or self.text_to_speech.model_id != model_id or self.text_to_speech.speed != speed:
+            self.text_to_speech = MLXAudioTextToSpeech(model_id=model_id, speed=speed)
+
+        audio_save_path = os.path.join(save_dir, f"mlx-audio-{voice_name}.wav")
+        try:
+            audio_save_path, sample_rate = self.text_to_speech.synthesize_to_file(
+                driving_text,
+                voice_name,
+                audio_save_path,
             )
-        from kokoro import KPipeline, KModel
-        import soundfile as sf
-        import json
-        with open(os.path.join(kokoro_dir, "config.json"), "r", encoding="utf-8") as fin:
-            model_config = json.load(fin)
-        model = KModel(config=model_config, model=os.path.join(kokoro_dir, "kokoro-v1_0.pth"))
-        pipeline = KPipeline(lang_code=voice_name[0], model=model)  # <= make sure lang_code matches voice
-        model.voices = {}
-        for vname in os.listdir(voice_path):
-            pipeline.voices[os.path.splitext(vname)[0]] = torch.load(os.path.join(voice_path, vname), weights_only=True)
-        generator = pipeline(
-            driving_text, voice=voice_name,  # <= change voice here
-            speed=1, split_pattern=r'\n+'
-        )
-        audios = []
-        for i, (gs, ps, audio) in enumerate(generator):
-            audios.append(audio)
-        audios = np.concatenate(audios)
-        audio_save_path = os.path.join(save_dir, f"kokoro-82m-{voice_name}.wav")
-        sf.write(audio_save_path, audios, 24000)
-        print("save audio to:", audio_save_path)
+        except RuntimeError as exc:
+            raise gr.Error(f"MLX-audio text driving failed: {exc}", duration=5) from exc
+        print(f"save audio to: {audio_save_path} ({sample_rate} Hz)")
         vsave_org_path, vsave_crop_path, total_time = self.run_audio_driving(audio_save_path, source_path,
                                                                              save_dir=save_dir)
 
@@ -510,11 +504,16 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             # default: use x_s
             x_d_new = x_s_user + eyes_delta.reshape(-1, num_kp, 3) + lip_delta.reshape(-1, num_kp, 3)
             # D(W(f_s; x_s, x′_d))
-            out = self.model_dict["warping_spade"].predict(f_s_user, x_s_user, x_d_new)
-            img_rgb = torch.from_numpy(img_rgb).to(self.device)
-            out_to_ori_blend = paste_back_pytorch(out, crop_M_c2o, img_rgb, mask_ori)
+            out = self.model_dict["warping_spade"].predict(
+                f_s_user,
+                x_s_user,
+                x_d_new,
+                return_numpy=True,
+                return_uint8=True,
+            )
+            out_to_ori_blend = paste_back_numpy(out, crop_M_c2o, img_rgb, mask_ori)
             gr.Info("Run successfully!", duration=2)
-            return out.to(dtype=torch.uint8).cpu().numpy(), out_to_ori_blend.to(dtype=torch.uint8).cpu().numpy()
+            return out, out_to_ori_blend
 
     def prepare_retargeting(self, input_image, flag_do_crop=True):
         """ for single image retargeting
@@ -568,10 +567,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             x_s_user = transform_keypoint(pitch, yaw, roll, t, exp, scale, kp)
             source_lmk_user = crop_info['lmk_crop']
             crop_M_c2o = crop_info['M_c2o']
-            crop_M_c2o = torch.from_numpy(crop_M_c2o).to(self.device)
             mask_ori = prepare_paste_back(self.mask_crop, crop_info['M_c2o'],
                                           dsize=(img_rgb.shape[1], img_rgb.shape[0]))
-            mask_ori = torch.from_numpy(mask_ori).to(self.device).float()
             return f_s_user, x_s_user, source_lmk_user, crop_M_c2o, mask_ori, img_rgb
         else:
             # when press the clear button, go here
