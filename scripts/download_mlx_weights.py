@@ -27,6 +27,9 @@ MEDIAPIPE_FACE_LANDMARKER_URL = (
 MLX_ALLOW_PATTERNS = (
     "liveportrait_mlx/*.npz",
     "liveportrait_animal_mlx/base_models_v1.1/*.npz",
+    "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
+    "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
+    "JoyVASA/motion_template/motion_template.pkl",
 )
 
 XPOSE_ALLOW_PATTERNS = (
@@ -107,8 +110,8 @@ def download_xpose(checkpoints_dir: Path) -> None:
 
 def download_joyvasa(checkpoints_dir: Path) -> None:
     print(
-        "downloading JoyVASA assets. Note: JoyVASA audio/text driving is "
-        "experimental in this MLX release and still runs through PyTorch."
+        "downloading JoyVASA source checkpoints for local MLX conversion. "
+        "The default MLX weights repo already contains JoyVASA runtime weights."
     )
     snapshot_download(
         repo_id=JOYVASA_REPO,
@@ -122,6 +125,23 @@ def download_joyvasa(checkpoints_dir: Path) -> None:
         local_dir=checkpoints_dir / "chinese-hubert-base",
         allow_patterns=list(CHINESE_HUBERT_ALLOW_PATTERNS),
     )
+    from src.models.mlx_joyvasa_audio_model import export_mlx_joyvasa_audio_from_pytorch_checkpoint
+    from src.models.mlx_joyvasa_motion_model import export_mlx_joyvasa_motion_from_pytorch_checkpoint
+
+    src = checkpoints_dir / "JoyVASA" / "motion_generator" / "motion_generator_hubert_chinese.pt"
+    motion_dst = checkpoints_dir / "JoyVASA" / "motion_generator" / "motion_generator_hubert_chinese_mlx.npz"
+    audio_dst = checkpoints_dir / "JoyVASA" / "audio_encoder" / "hubert_chinese_mlx.npz"
+    audio_src = checkpoints_dir / "chinese-hubert-base"
+    if not motion_dst.exists():
+        print(f"exporting JoyVASA MLX motion weights -> {motion_dst}")
+        export_mlx_joyvasa_motion_from_pytorch_checkpoint(src, motion_dst)
+    else:
+        print(f"already exists: {motion_dst}")
+    if not audio_dst.exists():
+        print(f"exporting JoyVASA MLX HuBERT audio weights -> {audio_dst}")
+        export_mlx_joyvasa_audio_from_pytorch_checkpoint(src, audio_src, audio_dst)
+    else:
+        print(f"already exists: {audio_dst}")
 
 
 def main() -> None:
@@ -147,7 +167,7 @@ def main() -> None:
     parser.add_argument(
         "--include-joyvasa",
         action="store_true",
-        help="also download experimental JoyVASA audio-to-motion assets for audio/text driving",
+        help="also download JoyVASA source checkpoints and export local MLX audio-to-motion weights",
     )
     args = parser.parse_args()
 

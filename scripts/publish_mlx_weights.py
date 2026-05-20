@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 """Publish converted MLX runtime weights to Hugging Face Hub.
 
-This script intentionally uploads only permissive LivePortrait-derived MLX
-weights. It does not upload XPose because XPose's license is non-commercial
-research only.
+This script uploads permissively licensed MLX runtime weights. It does not
+upload XPose because XPose's license is non-commercial research only.
 """
 
 from __future__ import annotations
@@ -69,6 +68,21 @@ WEIGHT_FILES = (
         "liveportrait_animal_mlx/base_models_v1.1/appearance_feature_extractor.npz",
         "KlingTeam/LivePortrait",
     ),
+    WeightFile(
+        "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
+        "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
+        "jdh-algo/JoyVASA",
+    ),
+    WeightFile(
+        "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
+        "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
+        "jdh-algo/JoyVASA + TencentGameMate/chinese-hubert-base",
+    ),
+    WeightFile(
+        "JoyVASA/motion_template/motion_template.pkl",
+        "JoyVASA/motion_template/motion_template.pkl",
+        "jdh-algo/JoyVASA",
+    ),
 )
 
 
@@ -82,6 +96,8 @@ tags:
 base_model:
 - KlingTeam/LivePortrait
 - warmshao/FasterLivePortrait
+- jdh-algo/JoyVASA
+- TencentGameMate/chinese-hubert-base
 ---
 
 # FasterLivePortrait-MLX Weights
@@ -89,11 +105,12 @@ base_model:
 Converted MLX `.npz` runtime weights for
 [FasterLivePortrait-MLX](https://github.com/ivanfioravanti/fasterliveportrait-mlx).
 
-These files are converted from permissively licensed LivePortrait /
-FasterLivePortrait checkpoints:
+These files are converted from permissively licensed source checkpoints:
 
 - [KlingTeam/LivePortrait](https://huggingface.co/KlingTeam/LivePortrait), MIT
 - [warmshao/FasterLivePortrait](https://huggingface.co/warmshao/FasterLivePortrait), MIT
+- [jdh-algo/JoyVASA](https://huggingface.co/jdh-algo/JoyVASA), MIT
+- [TencentGameMate/chinese-hubert-base](https://huggingface.co/TencentGameMate/chinese-hubert-base), MIT
 
 ## Included
 
@@ -101,12 +118,18 @@ FasterLivePortrait checkpoints:
 - Human landmark MLX weights
 - Human stitching / eye / lip retargeting MLX weights
 - Animal LivePortrait v1.1 core MLX weights
+- JoyVASA MLX audio-to-motion weights for the configured Chinese HuBERT path
+- JoyVASA motion template runtime asset
 
 ## Not Included
 
 This repository intentionally does **not** include XPose. XPose is used only for
 animal landmark detection in FasterLivePortrait-MLX, and its upstream license is
 restricted to non-commercial research use.
+
+This repository also does **not** include the original JoyVASA PyTorch
+checkpoint or the original Transformers HuBERT directory. Those are conversion
+inputs only.
 
 This repository also does not include the MediaPipe Face Landmarker task model;
 download it from Google's MediaPipe model URL as documented in the project
@@ -124,6 +147,12 @@ The weights were produced with:
 
 ```bash
 uv run --group convert python scripts/export_mlx_weights.py --include-animal
+```
+
+JoyVASA weights were produced with:
+
+```bash
+uv run --group convert python scripts/export_mlx_weights.py --include-joyvasa
 ```
 
 Converted tensors are derivative model weights and inherit the obligations of
