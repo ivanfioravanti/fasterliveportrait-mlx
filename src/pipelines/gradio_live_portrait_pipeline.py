@@ -62,6 +62,22 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         self.joyvasa_pipe = None
         self.text_to_speech = None
 
+    def _ensure_source_prepared(self, source_path, **kwargs):
+        should_prepare = (
+            self.source_path != source_path
+            or kwargs.get("update_ret", False)
+            or not self.src_imgs
+            or not self.src_infos
+        )
+        if not should_prepare:
+            return
+
+        self.init_vars(**kwargs)
+        ret = self.prepare_source(source_path)
+        if not ret or not self.src_imgs or not self.src_infos:
+            reason = getattr(self, "prepare_source_error", None) or "Error in processing source."
+            raise gr.Error(f"{reason} Source: {source_path}", duration=5)
+
     @staticmethod
     def _video_outputs(video_path, video_path_concat):
         return (
@@ -228,12 +244,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             raise gr.Error("The input source portrait or driving video hasn't been prepared yet 💥!", duration=5)
 
     def run_image_driving(self, driving_image_path, source_path, **kwargs):
-        if self.source_path != source_path or kwargs.get("update_ret", False):
-            # 如果不一样要重新初始化变量
-            self.init_vars(**kwargs)
-            ret = self.prepare_source(source_path)
-            if not ret:
-                raise gr.Error(f"Error in processing source:{source_path} 💥!", duration=5)
+        self._ensure_source_prepared(source_path, **kwargs)
 
         driving_image = cv2.imread(driving_image_path)
         save_dir = f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
@@ -261,12 +272,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     def run_video_driving(self, driving_video_path, source_path, **kwargs):
         t00 = time.time()
 
-        if self.source_path != source_path or kwargs.get("update_ret", False):
-            # 如果不一样要重新初始化变量
-            self.init_vars(**kwargs)
-            ret = self.prepare_source(source_path)
-            if not ret:
-                raise gr.Error(f"Error in processing source:{source_path} 💥!", duration=5)
+        self._ensure_source_prepared(source_path, **kwargs)
 
         vcap = cv2.VideoCapture(driving_video_path)
         if self.is_source_video:
@@ -339,12 +345,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     def run_pickle_driving(self, driving_pickle_path, source_path, **kwargs):
         t00 = time.time()
 
-        if self.source_path != source_path or kwargs.get("update_ret", False):
-            # 如果不一样要重新初始化变量
-            self.init_vars(**kwargs)
-            ret = self.prepare_source(source_path)
-            if not ret:
-                raise gr.Error(f"Error in processing source:{source_path} 💥!", duration=5)
+        self._ensure_source_prepared(source_path, **kwargs)
 
         with open(driving_pickle_path, "rb") as fin:
             dri_motion_infos = pickle.load(fin)
@@ -416,12 +417,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     def run_audio_driving(self, driving_audio_path, source_path, **kwargs):
         t00 = time.time()
 
-        if self.source_path != source_path or kwargs.get("update_ret", False):
-            # 如果不一样要重新初始化变量
-            self.init_vars(**kwargs)
-            ret = self.prepare_source(source_path)
-            if not ret:
-                raise gr.Error(f"Error in processing source:{source_path} 💥!", duration=5)
+        self._ensure_source_prepared(source_path, **kwargs)
         save_dir = kwargs.get("save_dir", f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")
         os.makedirs(save_dir, exist_ok=True)
 
@@ -454,12 +450,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         return vsave_org_path_new, vsave_crop_path_new, time.time() - t00
 
     def run_text_driving(self, driving_text, voice_name, source_path, **kwargs):
-        if self.source_path != source_path or kwargs.get("update_ret", False):
-            # 如果不一样要重新初始化变量
-            self.init_vars(**kwargs)
-            ret = self.prepare_source(source_path)
-            if not ret:
-                raise gr.Error(f"Error in processing source:{source_path} 💥!", duration=5)
+        self._ensure_source_prepared(source_path, **kwargs)
         save_dir = kwargs.get("save_dir", f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")
         os.makedirs(save_dir, exist_ok=True)
         tts_cfg = self.cfg.get("text_to_speech", {})
