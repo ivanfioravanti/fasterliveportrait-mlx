@@ -7,9 +7,9 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 ## Current Runtime Surface
 
 - MLX: human and animal LivePortrait core models, human landmark model, stitching,
-  retargeting, and MLX-audio Kokoro text-to-speech.
+  retargeting, MLX-audio Kokoro text-to-speech, and JoyVASA diffusion/motion generation.
 - Native/non-MLX: MediaPipe human face landmarks.
-- PyTorch compatibility: XPose animal landmarks and JoyVASA audio-to-motion.
+- PyTorch compatibility: XPose animal landmarks and JoyVASA HuBERT audio feature extraction.
 - Conversion-only PyTorch: export scripts that read source `.pth` checkpoints and write
   MLX `.npz` runtime weights.
 
@@ -36,11 +36,13 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 - Added `.npz` export/load support for the JoyVASA MLX motion model. The export path
   reads the trusted PyTorch checkpoint once and writes runtime weights that can be
   loaded without importing torch.
+- Integrated the exported MLX JoyVASA motion model into the audio/text driving pipeline.
+  The temporary PyTorch portion is now limited to HuBERT feature extraction.
 - Added PyTorch parity tests in `tests/test_mlx_joyvasa_motion_model.py` for each
   migrated part. These tests use fixed inputs and copied PyTorch weights so future
   migration steps can catch mathematical drift before replacing runtime paths.
 - Export command: `uv run python scripts/export_mlx_weights.py --include-joyvasa`.
-- Remaining JoyVASA work: port the audio encoder feature path and pipeline integration.
+- Remaining JoyVASA work: port the audio encoder feature path.
 
 ## Compatibility Policy
 

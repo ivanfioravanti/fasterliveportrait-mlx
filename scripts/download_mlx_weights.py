@@ -108,7 +108,7 @@ def download_xpose(checkpoints_dir: Path) -> None:
 def download_joyvasa(checkpoints_dir: Path) -> None:
     print(
         "downloading JoyVASA assets. Note: JoyVASA audio/text driving is "
-        "experimental in this MLX release and still runs through PyTorch."
+        "experimental in this MLX release and still uses PyTorch for HuBERT audio features."
     )
     snapshot_download(
         repo_id=JOYVASA_REPO,
@@ -122,6 +122,15 @@ def download_joyvasa(checkpoints_dir: Path) -> None:
         local_dir=checkpoints_dir / "chinese-hubert-base",
         allow_patterns=list(CHINESE_HUBERT_ALLOW_PATTERNS),
     )
+    from src.models.mlx_joyvasa_motion_model import export_mlx_joyvasa_motion_from_pytorch_checkpoint
+
+    src = checkpoints_dir / "JoyVASA" / "motion_generator" / "motion_generator_hubert_chinese.pt"
+    dst = checkpoints_dir / "JoyVASA" / "motion_generator" / "motion_generator_hubert_chinese_mlx.npz"
+    if not dst.exists():
+        print(f"exporting JoyVASA MLX motion weights -> {dst}")
+        export_mlx_joyvasa_motion_from_pytorch_checkpoint(src, dst)
+    else:
+        print(f"already exists: {dst}")
 
 
 def main() -> None:

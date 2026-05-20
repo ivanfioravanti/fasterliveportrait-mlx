@@ -467,3 +467,70 @@ def test_exported_mlx_motion_npz_reloads_and_matches_torch(tmp_path, monkeypatch
     np.testing.assert_allclose(np.array(mlx_motion), torch_motion.numpy(), rtol=6e-3, atol=6e-3)
     np.testing.assert_allclose(np.array(mlx_noise), torch_noise.numpy(), rtol=1e-6, atol=1e-7)
     np.testing.assert_allclose(np.array(mlx_audio), torch_audio.numpy(), rtol=1e-6, atol=1e-7)
+
+
+def test_pipeline_mlx_motion_bridge_matches_direct_sampler():
+    from src.models.mlx_joyvasa_motion_model import MlxJoyVASAMotionModel
+    from src.pipelines.joyvasa_audio_to_motion_pipeline import JoyVASAAudio2MotionPipeline
+
+    torch.manual_seed(7)
+    rng = np.random.default_rng(37)
+    torch_model = _make_torch_motion_model(
+        target="sample",
+        use_indicator=True,
+        n_diff_steps=1,
+        guiding_conditions="audio,",
+        cfg_mode="incremental",
+    )
+    mlx_model = MlxJoyVASAMotionModel(
+        target="sample",
+        motion_feat_dim=4,
+        n_motions=3,
+        n_prev_motions=2,
+        feature_dim=8,
+        n_heads=2,
+        n_layers=1,
+        mlp_ratio=2,
+        align_mask_width=2,
+        n_diff_steps=1,
+        diff_schedule="cosine",
+        cfg_mode="incremental",
+        guiding_conditions="audio,",
+        use_indicator=True,
+    )
+    mlx_model.load_pytorch_state_dict(torch_model.state_dict())
+
+    pipe = JoyVASAAudio2MotionPipeline.__new__(JoyVASAAudio2MotionPipeline)
+    pipe.motion_generator = mlx_model
+    pipe.cfg_mode = "incremental"
+    pipe.cfg_cond = ["audio"]
+    pipe.cfg_scale = 1.2
+
+    audio = rng.normal(size=(1, 3, 8)).astype(np.float32)
+    prev_motion = rng.normal(size=(1, 2, 4)).astype(np.float32)
+    prev_audio = rng.normal(size=(1, 2, 8)).astype(np.float32)
+    motion_at_t = rng.normal(size=(1, 3, 4)).astype(np.float32)
+    indicator = np.array([[1.0, 0.0, 1.0]], dtype=np.float32)
+
+    bridge_motion, bridge_noise, bridge_audio = pipe._sample_mlx_motion_from_audio_feature(
+        torch.from_numpy(audio),
+        prev_motion_feat=torch.from_numpy(prev_motion),
+        prev_audio_feat=torch.from_numpy(prev_audio),
+        motion_at_T=torch.from_numpy(motion_at_t),
+        indicator=torch.from_numpy(indicator),
+    )
+    direct_motion, direct_noise, direct_audio = mlx_model.sample(
+        mx.array(audio),
+        mx.array(prev_motion),
+        mx.array(prev_audio),
+        mx.array(motion_at_t),
+        indicator=mx.array(indicator),
+        cfg_mode="incremental",
+        cfg_cond=["audio"],
+        cfg_scale=1.2,
+        dynamic_threshold=0,
+    )
+
+    np.testing.assert_allclose(np.array(bridge_motion), np.array(direct_motion), rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(np.array(bridge_noise), np.array(direct_noise), rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(np.array(bridge_audio), np.array(direct_audio), rtol=1e-6, atol=1e-7)

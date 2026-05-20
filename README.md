@@ -64,9 +64,11 @@ Hugging Face on first use; `checkpoints/Kokoro-82M` is no longer required.
 
 Full text and audio-driven animation still requires the experimental JoyVASA checkpoints listed in
 `configs/mlx_infer.yaml` because JoyVASA converts the generated or uploaded audio into LivePortrait
-motion.
+motion. The JoyVASA diffusion/motion model runs through MLX weights exported locally from the trusted
+JoyVASA checkpoint; HuBERT audio feature extraction is still a temporary PyTorch compatibility path.
 
-To install those temporary experimental audio-driving assets:
+To install those temporary experimental audio-driving assets and export the JoyVASA MLX motion
+weights:
 
 ```shell
 uv run python scripts/download_mlx_weights.py \
@@ -136,7 +138,7 @@ curl -L https://storage.googleapis.com/mediapipe-models/face_landmarker/face_lan
 Export the MLX runtime weights after the source checkpoints are in place:
 
 ```shell
-uv run --group convert python scripts/export_mlx_weights.py --include-animal
+uv run --group convert python scripts/export_mlx_weights.py --include-animal --include-joyvasa
 ```
 
 The default runtime weights repo is [ivanfioravanti/FasterLivePortrait-MLX-weights](https://huggingface.co/ivanfioravanti/FasterLivePortrait-MLX-weights). To dry-run or publish converted permissive MLX weights to that repo, run:
@@ -150,7 +152,7 @@ uv run python scripts/publish_mlx_weights.py \
   --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights
 ```
 
-The publisher intentionally uploads only LivePortrait-derived `.npz` weights. It does not upload XPose.
+The publisher intentionally uploads only LivePortrait-derived `.npz` weights. It does not upload XPose or JoyVASA.
 
 ### Run With A Video
 

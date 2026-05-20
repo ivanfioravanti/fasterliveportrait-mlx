@@ -92,6 +92,7 @@ animal_xpose:
 
 joyvasa_models:
   motion_model_path: "checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese.pt"
+  motion_mlx_model_path: "checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz"
   audio_model_path: "checkpoints/chinese-hubert-base"
   motion_template_path: "checkpoints/JoyVASA/motion_template/motion_template.pkl"
 
