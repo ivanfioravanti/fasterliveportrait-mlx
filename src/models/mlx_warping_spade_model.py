@@ -6,7 +6,6 @@ from __future__ import annotations
 import os
 
 import numpy as np
-import torch
 import mlx.core as mx
 import mlx.utils as mu
 
@@ -66,20 +65,11 @@ def _cast_params(model, dtype):
     model.update(mu.tree_unflatten([(k, v.astype(dtype)) for k, v in flat.items()]))
 
 
-def _default_torch_device():
-    if torch.cuda.is_available():
-        return torch.device(f"cuda:{torch.cuda.current_device()}")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
 class MlxWarpingSpadeModel:
     """warping_module + spade_generator running on MLX (Apple Silicon)."""
 
     def __init__(self, **kwargs):
         self.predict_type = "mlx"
-        self.device = _default_torch_device()
 
         self.dtype = _resolve_dtype(kwargs)
 
@@ -270,14 +260,12 @@ class MlxWarpingSpadeModel:
             return img
         mx.eval(img)
 
-        # MLX (N, H, W, 3) -> NumPy -> PyTorch tensor on self.device, in [0, 255]
+        # MLX (N, H, W, 3) -> NumPy (H, W, 3), in [0, 255].
         if return_uint8:
             img_np = np.array(img, dtype=np.uint8)[0]  # (H, W, 3)
         else:
             img_np = np.array(img, dtype=np.float32)[0]  # (H, W, 3)
-        if return_numpy:
-            return img_np
-        return torch.from_numpy(img_np).to(device=self.device)
+        return img_np
 
     def __del__(self):
         for attr in ("warping", "spade"):

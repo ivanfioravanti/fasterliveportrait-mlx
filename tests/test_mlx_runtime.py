@@ -33,9 +33,6 @@ ANIMAL_RUNTIME_FILES = HUMAN_RUNTIME_FILES + (
     ROOT / "checkpoints/liveportrait_animal_mlx/base_models_v1.1/spade_generator.npz",
     ROOT / "checkpoints/liveportrait_animal_mlx/base_models_v1.1/motion_extractor.npz",
     ROOT / "checkpoints/liveportrait_animal_mlx/base_models_v1.1/appearance_feature_extractor.npz",
-    ROOT / "checkpoints/liveportrait_animals/xpose.pth",
-    ROOT / "checkpoints/liveportrait_animals/clip_embedding/clip_embedding_9.pkl",
-    ROOT / "checkpoints/liveportrait_animals/clip_embedding/clip_embedding_68.pkl",
 )
 
 
@@ -56,7 +53,6 @@ def _assert_non_black_rgb(image, *, label):
 def test_mlx_config_has_no_runtime_ort_models():
     cfg = OmegaConf.load(CFG_PATH)
     allowed_model_names = {
-        "MediaPipeFaceModel",
         "MlxFaceAnalysisModel",
         "MlxAppearanceFeatureExtractorModel",
         "MlxLandmarkModel",
@@ -82,6 +78,7 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert cfg.animal_models.app_feat_extractor.dtype == "bf16"
     assert cfg.models.face_analysis.name == "MlxFaceAnalysisModel"
     assert cfg.animal_models.face_analysis.name == "MlxFaceAnalysisModel"
+    assert "animal_xpose" not in cfg
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     runtime_dependencies = {dep.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0] for dep in pyproject["project"]["dependencies"]}
@@ -90,6 +87,9 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert "kokoro" not in runtime_dependencies
     assert "insightface" not in runtime_dependencies
     assert "mediapipe" not in runtime_dependencies
+    assert "torch" not in runtime_dependencies
+    assert "torchvision" not in runtime_dependencies
+    assert "transformers" not in runtime_dependencies
     assert "mlx-audio" in runtime_dependencies
     assert "torchgeometry" not in runtime_dependencies
     assert "onnx" in pyproject["dependency-groups"]["convert"]
@@ -100,12 +100,12 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert not (ROOT / "configs" / "onnx_mp_infer.yaml").exists()
 
 
-def test_importing_mlx_runtime_does_not_import_onnxruntime():
+def test_importing_mlx_runtime_does_not_import_legacy_runtime_deps():
     code = (
-        "import sys;"
+        "import json, sys;"
         "import src.models;"
         "from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline;"
-        "print('onnxruntime' in sys.modules)"
+        "print(json.dumps({name: name in sys.modules for name in ['mediapipe', 'onnxruntime', 'torch']}))"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -114,7 +114,7 @@ def test_importing_mlx_runtime_does_not_import_onnxruntime():
         capture_output=True,
         check=True,
     )
-    assert result.stdout.strip() == "False"
+    assert result.stdout.strip() == '{"mediapipe": false, "onnxruntime": false, "torch": false}'
 
 
 def test_mlx_face_analysis_predicts_landmarks_without_mediapipe():

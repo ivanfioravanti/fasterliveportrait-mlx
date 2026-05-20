@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """Publish converted MLX runtime weights to Hugging Face Hub.
 
-This script uploads permissively licensed MLX runtime weights. It does not
-upload XPose because XPose's license is non-commercial research only.
+This script uploads permissively licensed MLX runtime weights.
 """
 
 from __future__ import annotations
@@ -123,17 +122,9 @@ These files are converted from permissively licensed source checkpoints:
 
 ## Not Included
 
-This repository intentionally does **not** include XPose. XPose is used only for
-animal landmark detection in FasterLivePortrait-MLX, and its upstream license is
-restricted to non-commercial research use.
-
 This repository also does **not** include the original JoyVASA PyTorch
 checkpoint or the original Transformers HuBERT directory. Those are conversion
 inputs only.
-
-This repository also does not include the MediaPipe Face Landmarker task model;
-download it from Google's MediaPipe model URL as documented in the project
-README.
 
 ## Use
 

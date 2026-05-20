@@ -5,13 +5,10 @@
 # @FileName: faster_live_portrait_pipeline.py
 
 import copy
-import os.path
 import traceback
-from PIL import Image
 import cv2
 from tqdm import tqdm
 import numpy as np
-import torch
 
 from .. import models
 from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back_numpy
@@ -73,27 +70,11 @@ class FasterLivePortraitPipeline:
             print("load Animal Model >>>")
             self.is_animal = True
             self.model_dict = {}
-            from src.utils.animal_landmark_runner import XPoseRunner
-            from src.utils.utils import make_abs_path
-            checkpoint_dir = None
             for model_name in self.cfg.animal_models:
                 print(f"loading model: {model_name}")
                 print(self.cfg.animal_models[model_name])
-                if checkpoint_dir is None and isinstance(self.cfg.animal_models[model_name].model_path, str):
-                    checkpoint_dir = os.path.dirname(self.cfg.animal_models[model_name].model_path)
                 self.model_dict[model_name] = getattr(models, self.cfg.animal_models[model_name]["name"])(
                     **self.cfg.animal_models[model_name])
-
-            xpose_cfg = self.cfg.get("animal_xpose", {})
-            xpose_config_file_path: str = make_abs_path("models/XPose/config_model/UniPose_SwinT.py")
-            xpose_ckpt_path: str = xpose_cfg.get("model_path") or os.path.join(checkpoint_dir, "xpose.pth")
-            xpose_embedding_cache_path: str = xpose_cfg.get("embeddings_cache_path") or os.path.join(
-                checkpoint_dir, 'clip_embedding'
-            )
-            self.model_dict["xpose"] = XPoseRunner(model_config_path=xpose_config_file_path,
-                                                   model_checkpoint_path=xpose_ckpt_path,
-                                                   embeddings_cache_path=xpose_embedding_cache_path,
-                                                   flag_use_half_precision=True)
 
     def init_vars(self, **kwargs):
         self.mask_crop = cv2.imread(self.cfg.infer_params.mask_crop_path, cv2.IMREAD_COLOR)
@@ -112,12 +93,6 @@ class FasterLivePortraitPipeline:
         self.src_imgs = []
         self.prepare_source_error = None
         self.is_source_video = False
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        else:
-            self.device = torch.device("cpu")
 
     def calc_combined_eye_ratio(self, c_d_eyes_i, source_lmk):
         c_s_eyes = calc_eye_close_ratio(source_lmk[None])
@@ -207,23 +182,14 @@ class FasterLivePortraitPipeline:
                 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
                 src_faces = []
                 if self.is_animal:
-                    with torch.no_grad():
-                        img_rgb_pil = Image.fromarray(img_rgb)
-                        lmk = self.model_dict["xpose"].run(
-                            img_rgb_pil,
-                            'face',
-                            'animal_face',
-                            0,
-                            0
-                    )
-                    if lmk is None:
+                    src_faces = self.model_dict["face_analysis"].predict(img_bgr)
+                    if len(src_faces) == 0:
                         self.prepare_source_error = (
                             "No animal face detected in the source. "
                             "Check Animal mode and use a clearer animal face image."
                         )
                         continue
                     self.src_imgs.append(img_rgb)
-                    src_faces.append(lmk)
                 else:
                     src_faces = self.model_dict["face_analysis"].predict(img_bgr)
                     if len(src_faces) == 0:
@@ -556,9 +522,9 @@ class FasterLivePortraitPipeline:
             if isinstance(out_crop, np.ndarray):
                 out_crop_np = out_crop if out_crop.dtype == np.uint8 else out_crop.astype(np.uint8)
             else:
-                out_crop_np = out_crop.to(dtype=torch.uint8).cpu().numpy()
+                out_crop_np = np.asarray(out_crop, dtype=np.uint8)
             return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
-        out_crop_np = out_crop if isinstance(out_crop, np.ndarray) else out_crop.to(dtype=torch.uint8).cpu().numpy()
+        out_crop_np = out_crop if isinstance(out_crop, np.ndarray) else np.asarray(out_crop, dtype=np.uint8)
         return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
 
     def run(self, image, img_src, src_info, **kwargs):

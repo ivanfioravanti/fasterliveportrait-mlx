@@ -17,7 +17,7 @@ Thanks to the authors of [FasterLivePortrait](https://github.com/warmshao/Faster
 Supported release surface:
 
 - Human image, video, and camera driving on Apple Silicon using the MLX LivePortrait core.
-- Animal image and video driving using the MLX LivePortrait animal core with XPose PyTorch landmarks.
+- Animal image and video driving using the MLX LivePortrait animal core with the MLX landmark bootstrap.
 - MLX human face analysis and landmarks using the exported landmark `.npz` checkpoint.
 - Optional conversion and publishing tools for exporting MLX `.npz` weights from source checkpoints.
 
@@ -86,14 +86,6 @@ That command writes:
 - `checkpoints/JoyVASA/audio_encoder/hubert_chinese_mlx.npz`
 - `checkpoints/JoyVASA/motion_template/motion_template.pkl`
 
-For animal mode, XPose is still required for animal landmark detection. XPose is licensed for non-commercial research use only, so it is not included in the MLX weights repo:
-
-```shell
-uv run python scripts/download_mlx_weights.py \
-  --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights \
-  --include-animal-xpose
-```
-
 Alternatively, export the MLX weights locally from the original checkpoints:
 
 ```shell
@@ -107,7 +99,7 @@ curl -L https://huggingface.co/KlingTeam/LivePortrait/resolve/main/liveportrait/
   -o checkpoints/liveportrait_torch/stitching_retargeting_module.pth
 ```
 
-For animal mode, download the official v1.1 base models and XPose checkpoint:
+For animal mode, download the official v1.1 base models:
 
 ```shell
 uv run hf download KlingTeam/LivePortrait \
@@ -115,16 +107,6 @@ uv run hf download KlingTeam/LivePortrait \
   liveportrait_animals/base_models_v1.1/motion_extractor.pth \
   liveportrait_animals/base_models_v1.1/spade_generator.pth \
   liveportrait_animals/base_models_v1.1/warping_module.pth \
-  liveportrait_animals/xpose.pth \
-  --local-dir ./checkpoints
-```
-
-Download the cached XPose text embeddings used by this fork:
-
-```shell
-uv run hf download warmshao/FasterLivePortrait \
-  liveportrait_animal_onnx/clip_embedding_9.pkl \
-  liveportrait_animal_onnx/clip_embedding_68.pkl \
   --local-dir ./checkpoints
 ```
 
@@ -154,8 +136,8 @@ uv run python scripts/publish_mlx_weights.py \
 ```
 
 The publisher uploads converted permissive MLX runtime weights, including JoyVASA MLX
-audio-to-motion weights. It does not upload XPose, the original JoyVASA PyTorch checkpoint,
-or the original Transformers HuBERT directory.
+audio-to-motion weights. It does not upload the original JoyVASA PyTorch checkpoint or the
+original Transformers HuBERT directory.
 
 ### Run With A Video
 
@@ -252,8 +234,7 @@ The FastAPI entrypoint is experimental in this release. On startup it reads `con
 
 ```shell
 uv run python scripts/download_mlx_weights.py \
-  --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights \
-  --include-animal-xpose
+  --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights
 ```
 
 Set `FLIP_CHECKPOINT_DIR` to use a checkpoint directory outside the repo. Set `FLIP_MLX_WEIGHTS_REPO` or `FLIP_MLX_WEIGHTS_REVISION` to override the default MLX weights repo or revision.
