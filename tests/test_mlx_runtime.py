@@ -134,6 +134,8 @@ def test_mlx_face_analysis_predicts_landmarks_without_mediapipe():
     assert faces[0].shape == (203, 2)
     assert faces[0].dtype == np.float32
     assert np.isfinite(faces[0]).all()
+    bbox_size = np.max(faces[0], axis=0) - np.min(faces[0], axis=0)
+    assert float(max(bbox_size)) < 0.45 * max(image.shape[:2])
 
 
 def test_mlx_animal_face_analysis_fallback_landmarks_match_crop_contract():
@@ -238,6 +240,8 @@ def test_mlx_retargeting_smoke_changes_output():
 
     _assert_non_black_rgb(closed_crop, label="retargeting closed crop")
     _assert_non_black_rgb(open_crop, label="retargeting open crop")
+    assert float(np.mean(np.all(closed_crop < 4, axis=2))) < 0.01
+    assert float(np.mean(np.all(open_crop < 4, axis=2))) < 0.01
     assert closed_paste.shape == open_paste.shape
     assert closed_paste.dtype == np.uint8
     assert open_paste.dtype == np.uint8
