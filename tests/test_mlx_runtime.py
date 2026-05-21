@@ -246,3 +246,11 @@ def test_mlx_retargeting_smoke_changes_output():
         np.abs(closed_paste.astype(np.int16) - open_paste.astype(np.int16))
     )
     assert paste_delta > 1.0
+
+
+def test_mlx_retargeting_missing_input_is_noop():
+    from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
+
+    pipe = object.__new__(GradioLivePortraitPipeline)
+
+    assert pipe.execute_image(0.0, 0.0, None, True) == (None, None)
