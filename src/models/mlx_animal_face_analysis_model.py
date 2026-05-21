@@ -124,6 +124,19 @@ class MlxAnimalFaceAnalysisModel:
 
         return self._predict_cat_cascade(img_bgr)
 
+    def predict_dense(self, img_bgr):
+        """Return dense MLX landmarks when callers need eye/lip ratios.
+
+        The default animal crop path intentionally returns XPose-style 9-point
+        landmarks for stable cat crops. Eye/lip retargeting needs the dense
+        eyelid and mouth contour indices used by the human retargeting MLPs, so
+        it asks the MLX bootstrap detector directly.
+        """
+        if img_bgr is None or self.bootstrap is None:
+            return []
+        faces = self.bootstrap.predict(img_bgr)
+        return faces[: self.max_num_faces] if faces else []
+
     def __del__(self):
         if hasattr(self, "bootstrap"):
             del self.bootstrap

@@ -15,7 +15,7 @@ from .joyvasa_audio_to_motion_pipeline import JoyVASAAudio2MotionPipeline
 from .mlx_audio_tts import MLX_AUDIO_KOKORO_MODEL, MLXAudioTextToSpeech
 from ..utils.utils import video_has_audio
 from ..utils.utils import resize_to_limit, prepare_paste_back, transform_keypoint
-from ..utils.crop import crop_image, paste_back_numpy
+from ..utils.crop import crop_image, paste_back_numpy, _transform_pts
 from ..utils.ffmpeg_utils import run_ffmpeg
 from src.utils import utils
 import platform
@@ -62,10 +62,21 @@ def update_progress(progress, value, desc):
 
 
 class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
+    _ANIMAL_EYE_TARGET_MAX = 0.6
+    _ANIMAL_LIP_TARGET_SCALE = 0.375
+    _ANIMAL_LIP_TARGET_MAX = 0.30
+
     def __init__(self, cfg, **kwargs):
         super(GradioLivePortraitPipeline, self).__init__(cfg, **kwargs)
         self.joyvasa_pipe = None
         self.text_to_speech = None
+
+    @classmethod
+    def _calibrate_animal_retarget_ratios(cls, input_eye_ratio: float, input_lip_ratio: float) -> tuple[float, float]:
+        eye_ratio = float(np.clip(float(input_eye_ratio), 0.0, cls._ANIMAL_EYE_TARGET_MAX))
+        lip_ratio = float(np.clip(float(input_lip_ratio), 0.0, 1.0) * cls._ANIMAL_LIP_TARGET_SCALE)
+        lip_ratio = float(np.clip(lip_ratio, 0.0, cls._ANIMAL_LIP_TARGET_MAX))
+        return eye_ratio, lip_ratio
 
     def _ensure_source_prepared(self, source_path, **kwargs):
         should_prepare = (
@@ -517,6 +528,11 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         # disposable feature
         f_s_user, x_s_user, source_lmk_user, crop_M_c2o, mask_ori, img_rgb = \
             self.prepare_retargeting(input_image, flag_do_crop)
+        if self.is_animal:
+            input_eye_ratio, input_lip_ratio = self._calibrate_animal_retarget_ratios(
+                input_eye_ratio,
+                input_lip_ratio,
+            )
 
         # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)
         combined_eye_ratio_tensor = self.calc_combined_eye_ratio([[input_eye_ratio]], source_lmk_user)
@@ -549,10 +565,17 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                                       self.cfg.infer_params.source_division)
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-            if self.is_animal:
-                raise gr.Error("Animal Model Not Supported in Face Retarget 💥!", duration=5)
+            face_analysis = self.model_dict["face_analysis"]
+            dense_src_faces = None
+            if self.is_animal and hasattr(face_analysis, "predict_dense"):
+                src_faces = face_analysis.predict(img_bgr)
+                dense_src_faces = face_analysis.predict_dense(img_bgr)
+                if len(src_faces) == 0 or len(dense_src_faces) == 0:
+                    raise gr.Error("No dense animal face landmarks detected for retargeting 💥!", duration=5)
+            elif self.is_animal:
+                raise gr.Error("Animal face retargeting needs dense MLX landmarks 💥!", duration=5)
             else:
-                src_faces = self.model_dict["face_analysis"].predict(img_bgr)
+                src_faces = face_analysis.predict(img_bgr)
 
             if len(src_faces) == 0:
                 raise gr.Error("No face detect in image 💥!", duration=5)
@@ -571,7 +594,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                     vy_ratio=self.cfg.crop_params.src_vy_ratio,
                 )
 
-                lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
+                if self.is_animal:
+                    lmk = _transform_pts(dense_src_faces[i], ret_dct["M_o2c"])
+                else:
+                    lmk = self.model_dict["landmark"].predict(img_rgb, lmk)
                 ret_dct["lmk_crop"] = lmk
                 ret_dct["lmk_crop_256x256"] = ret_dct["lmk_crop"] * 256 / self.cfg.crop_params.src_dsize
 

@@ -199,6 +199,32 @@ def test_mlx_animal_face_analysis_prefers_cat_cascade(monkeypatch):
     assert faces[0] is sparse_landmarks
 
 
+def test_mlx_animal_face_analysis_predict_dense_uses_bootstrap():
+    from src.models.mlx_animal_face_analysis_model import MlxAnimalFaceAnalysisModel
+
+    model = MlxAnimalFaceAnalysisModel(enable_mlx_bootstrap=False, enable_cat_cascade=False)
+    dense_landmarks = np.zeros((203, 2), dtype=np.float32)
+
+    class Bootstrap:
+        def predict(self, _image):
+            return [dense_landmarks]
+
+    model.bootstrap = Bootstrap()
+
+    faces = model.predict_dense(np.zeros((32, 32, 3), dtype=np.uint8))
+
+    assert len(faces) == 1
+    assert faces[0] is dense_landmarks
+
+
+def test_animal_retarget_ratios_are_calibrated_to_stable_range():
+    from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
+
+    assert GradioLivePortraitPipeline._calibrate_animal_retarget_ratios(0.8, 0.8) == pytest.approx((0.6, 0.3))
+    assert GradioLivePortraitPipeline._calibrate_animal_retarget_ratios(0.4, 0.4) == pytest.approx((0.4, 0.15))
+    assert GradioLivePortraitPipeline._calibrate_animal_retarget_ratios(-1.0, -1.0) == pytest.approx((0.0, 0.0))
+
+
 def test_mlx_animal_face_analysis_predicts_landmarks_without_xpose():
     _require_files((ROOT / "assets/examples/source/s39.jpg", ROOT / "checkpoints/liveportrait_mlx/landmark.npz"))
 
