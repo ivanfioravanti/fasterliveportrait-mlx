@@ -4,16 +4,10 @@ import numpy as np
 import ffmpeg
 import os
 import os.path as osp
-import torch
 
 
 def get_opt_device_dtype():
-    if torch.cuda.is_available():
-        return torch.device("cuda"), torch.float16
-    elif torch.backends.mps.is_available():
-        return torch.device("mps"), torch.float32
-    else:
-        return torch.device("cpu"), torch.float32
+    return "mlx", np.float32
 
 
 def video_has_audio(video_file):
@@ -142,7 +136,7 @@ def calc_lip_close_ratio(lmk: np.ndarray) -> np.ndarray:
 
 
 def _keypoints_to_numpy(kp):
-    if isinstance(kp, torch.Tensor):
+    if hasattr(kp, "detach"):
         return kp.detach().cpu().numpy()
     return np.asarray(kp)
 

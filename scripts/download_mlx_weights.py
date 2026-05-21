@@ -3,26 +3,19 @@
 """Download runtime assets for the MLX port.
 
 The default download path uses a permissive MLX weights repo containing only
-converted LivePortrait runtime weights. XPose remains optional because its
-license is non-commercial research only.
+converted LivePortrait runtime weights.
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import shutil
 import sys
-import urllib.request
 
 from huggingface_hub import snapshot_download
 
 
 DEFAULT_MLX_REPO = "ivanfioravanti/FasterLivePortrait-MLX-weights"
-MEDIAPIPE_FACE_LANDMARKER_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-    "face_landmarker/float16/latest/face_landmarker.task"
-)
 
 MLX_ALLOW_PATTERNS = (
     "liveportrait_mlx/*.npz",
@@ -30,10 +23,6 @@ MLX_ALLOW_PATTERNS = (
     "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
     "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
     "JoyVASA/motion_template/motion_template.pkl",
-)
-
-XPOSE_ALLOW_PATTERNS = (
-    "liveportrait_animals/xpose.pth",
 )
 
 JOYVASA_REPO = "jdh-algo/JoyVASA"
@@ -49,12 +38,6 @@ CHINESE_HUBERT_ALLOW_PATTERNS = (
     "pytorch_model.bin",
 )
 
-ANIMAL_EMBEDDING_PATTERNS = (
-    "liveportrait_animal_onnx/clip_embedding_9.pkl",
-    "liveportrait_animal_onnx/clip_embedding_68.pkl",
-)
-
-
 def download_mlx_weights(repo_id: str, checkpoints_dir: Path, revision: str | None) -> None:
     print(f"downloading MLX weights from {repo_id} -> {checkpoints_dir}")
     snapshot_download(
@@ -64,48 +47,6 @@ def download_mlx_weights(repo_id: str, checkpoints_dir: Path, revision: str | No
         local_dir=checkpoints_dir,
         allow_patterns=list(MLX_ALLOW_PATTERNS),
     )
-
-
-def download_mediapipe(checkpoints_dir: Path) -> None:
-    out_path = checkpoints_dir / "mediapipe" / "face_landmarker.task"
-    if out_path.exists():
-        print(f"already exists: {out_path}")
-        return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"downloading MediaPipe face landmarker -> {out_path}")
-    urllib.request.urlretrieve(MEDIAPIPE_FACE_LANDMARKER_URL, out_path)
-
-
-def download_xpose(checkpoints_dir: Path) -> None:
-    print(
-        "downloading XPose assets. Note: XPose is licensed for non-commercial "
-        "research use only; it is intentionally not included in the MLX weights repo."
-    )
-    snapshot_download(
-        repo_id="KlingTeam/LivePortrait",
-        repo_type="model",
-        local_dir=checkpoints_dir,
-        allow_patterns=list(XPOSE_ALLOW_PATTERNS),
-    )
-    snapshot_download(
-        repo_id="warmshao/FasterLivePortrait",
-        repo_type="model",
-        local_dir=checkpoints_dir,
-        allow_patterns=list(ANIMAL_EMBEDDING_PATTERNS),
-    )
-
-    embedding_dir = checkpoints_dir / "liveportrait_animals" / "clip_embedding"
-    embedding_dir.mkdir(parents=True, exist_ok=True)
-    for src_name, dst_name in (
-        ("clip_embedding_9.pkl", "clip_embedding_9.pkl"),
-        ("clip_embedding_68.pkl", "clip_embedding_68.pkl"),
-    ):
-        src = checkpoints_dir / "liveportrait_animal_onnx" / src_name
-        dst = embedding_dir / dst_name
-        if not src.exists():
-            raise FileNotFoundError(f"missing downloaded XPose embedding: {src}")
-        shutil.copy2(src, dst)
-        print(f"wrote {dst}")
 
 
 def download_joyvasa(checkpoints_dir: Path) -> None:
@@ -155,16 +96,6 @@ def main() -> None:
         help="do not download LivePortrait MLX .npz runtime weights",
     )
     parser.add_argument(
-        "--skip-mediapipe",
-        action="store_true",
-        help="do not download Google's MediaPipe face landmarker task model",
-    )
-    parser.add_argument(
-        "--include-animal-xpose",
-        action="store_true",
-        help="also download XPose assets for animal mode; XPose is non-commercial research only",
-    )
-    parser.add_argument(
         "--include-joyvasa",
         action="store_true",
         help="also download JoyVASA source checkpoints and export local MLX audio-to-motion weights",
@@ -175,10 +106,6 @@ def main() -> None:
     try:
         if not args.skip_mlx_weights:
             download_mlx_weights(args.repo_id, checkpoints_dir, args.revision)
-        if not args.skip_mediapipe:
-            download_mediapipe(checkpoints_dir)
-        if args.include_animal_xpose:
-            download_xpose(checkpoints_dir)
         if args.include_joyvasa:
             download_joyvasa(checkpoints_dir)
     except Exception as exc:

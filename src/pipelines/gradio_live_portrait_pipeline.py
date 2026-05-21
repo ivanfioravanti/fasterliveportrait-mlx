@@ -109,7 +109,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 + ", ".join(missing)
                 + ". Text driving uses MLX-audio for TTS, but still needs JoyVASA to convert audio into motion. "
                 + "Install the temporary experimental assets with: "
-                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights --skip-mediapipe --include-joyvasa`.",
+                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights --include-joyvasa`.",
                 duration=8,
             )
 
@@ -478,33 +478,37 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     def execute_image(self, input_eye_ratio: float, input_lip_ratio: float, input_image, flag_do_crop=True):
         """ for single image retargeting
         """
+        if input_image is None:
+            gr.Warning("Upload or select a retargeting input image first.", duration=5)
+            return None, None
+        if input_eye_ratio is None or input_lip_ratio is None:
+            gr.Warning("Set valid eye and lip retargeting ratios first.", duration=5)
+            return None, None
+
         # disposable feature
         f_s_user, x_s_user, source_lmk_user, crop_M_c2o, mask_ori, img_rgb = \
             self.prepare_retargeting(input_image, flag_do_crop)
 
-        if input_eye_ratio is None or input_lip_ratio is None:
-            raise gr.Error("Invalid ratio input 💥!", duration=5)
-        else:
-            # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)
-            combined_eye_ratio_tensor = self.calc_combined_eye_ratio([[input_eye_ratio]], source_lmk_user)
-            eyes_delta = self.retarget_eye(x_s_user, combined_eye_ratio_tensor)
-            # ∆_lip,i = R_lip(x_s; c_s,lip, c_d,lip,i)
-            combined_lip_ratio_tensor = self.calc_combined_lip_ratio([[input_lip_ratio]], source_lmk_user)
-            lip_delta = self.retarget_lip(x_s_user, combined_lip_ratio_tensor)
-            num_kp = x_s_user.shape[1]
-            # default: use x_s
-            x_d_new = x_s_user + eyes_delta.reshape(-1, num_kp, 3) + lip_delta.reshape(-1, num_kp, 3)
-            # D(W(f_s; x_s, x′_d))
-            out = self.model_dict["warping_spade"].predict(
-                f_s_user,
-                x_s_user,
-                x_d_new,
-                return_numpy=True,
-                return_uint8=True,
-            )
-            out_to_ori_blend = paste_back_numpy(out, crop_M_c2o, img_rgb, mask_ori)
-            gr.Info("Run successfully!", duration=2)
-            return out, out_to_ori_blend
+        # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)
+        combined_eye_ratio_tensor = self.calc_combined_eye_ratio([[input_eye_ratio]], source_lmk_user)
+        eyes_delta = self.retarget_eye(x_s_user, combined_eye_ratio_tensor)
+        # ∆_lip,i = R_lip(x_s; c_s,lip, c_d,lip,i)
+        combined_lip_ratio_tensor = self.calc_combined_lip_ratio([[input_lip_ratio]], source_lmk_user)
+        lip_delta = self.retarget_lip(x_s_user, combined_lip_ratio_tensor)
+        num_kp = x_s_user.shape[1]
+        # default: use x_s
+        x_d_new = x_s_user + eyes_delta.reshape(-1, num_kp, 3) + lip_delta.reshape(-1, num_kp, 3)
+        # D(W(f_s; x_s, x′_d))
+        out = self.model_dict["warping_spade"].predict(
+            f_s_user,
+            x_s_user,
+            x_d_new,
+            return_numpy=True,
+            return_uint8=True,
+        )
+        out_to_ori_blend = paste_back_numpy(out, crop_M_c2o, img_rgb, mask_ori)
+        gr.Info("Run successfully!", duration=2)
+        return out, out_to_ori_blend
 
     def prepare_retargeting(self, input_image, flag_do_crop=True):
         """ for single image retargeting

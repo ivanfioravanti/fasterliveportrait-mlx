@@ -7,7 +7,8 @@ import importlib
 
 
 _MODEL_MODULES = {
-    "MediaPipeFaceModel": ".mediapipe_face_model",
+    "MlxAnimalFaceAnalysisModel": ".mlx_animal_face_analysis_model",
+    "MlxFaceAnalysisModel": ".mlx_face_analysis_model",
     "MlxWarpingSpadeModel": ".mlx_warping_spade_model",
     "MlxMotionExtractorModel": ".mlx_motion_extractor_model",
     "MlxAppearanceFeatureExtractorModel": ".mlx_appearance_feature_extractor_model",

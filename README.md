@@ -17,8 +17,8 @@ Thanks to the authors of [FasterLivePortrait](https://github.com/warmshao/Faster
 Supported release surface:
 
 - Human image, video, and camera driving on Apple Silicon using the MLX LivePortrait core.
-- Animal image and video driving using the MLX LivePortrait animal core with XPose PyTorch landmarks.
-- MediaPipe face landmarks for human source and driving frames.
+- Animal image and video driving using the MLX LivePortrait animal core with MLX animal face analysis.
+- MLX human face analysis and landmarks using the exported landmark `.npz` checkpoint.
 - Optional conversion and publishing tools for exporting MLX `.npz` weights from source checkpoints.
 
 - MLX implementations for the main human pipeline models:
@@ -28,8 +28,9 @@ Supported release surface:
   - appearance feature extractor
   - landmark model
   - stitching and retargeting MLPs
-- The runtime path is MLX-only for LivePortrait core models; ONNX is kept only as an optional conversion-time dependency for exporting MLX `.npz` weights.
-- Human and driving face analysis use MediaPipe.
+- The default human runtime path is MLX-only for LivePortrait core models, face analysis, landmarks, stitching, and retargeting. ONNX is kept only as an optional conversion-time dependency for exporting MLX `.npz` weights.
+- Human and driving face analysis use the MLX landmark checkpoint as a bootstrap/refiner. MediaPipe is no longer part of the default config.
+- Animal source analysis uses `MlxAnimalFaceAnalysisModel`: MLX landmark bootstrap first, then a no-PyTorch cat-face cascade fallback for crop landmarks when the bootstrap cannot lock on. XPose is no longer part of the default config.
 - Human MLX landmark and stitching weights load from exported `.npz` files at runtime.
 - Animal base models are configured for official LivePortrait animal v1.1 weights.
 - Runtime profiles are available for exact and faster approximate realtime paths.
@@ -57,7 +58,7 @@ uv run python scripts/download_mlx_weights.py \
 ```
 
 This downloads the human MLX weights, animal LivePortrait core MLX weights, JoyVASA MLX
-audio-to-motion weights, the JoyVASA motion template, and the MediaPipe face landmarker.
+audio-to-motion weights, and the JoyVASA motion template.
 
 Gradio text driving uses [MLX-audio](https://github.com/Blaizzy/mlx-audio) with the default
 `mlx-community/Kokoro-82M-bf16` model. The model and selected voice are downloaded lazily from
@@ -77,7 +78,6 @@ MLX weights repo:
 ```shell
 uv run python scripts/download_mlx_weights.py \
   --skip-mlx-weights \
-  --skip-mediapipe \
   --include-joyvasa
 ```
 
@@ -86,14 +86,6 @@ That command writes:
 - `checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz`
 - `checkpoints/JoyVASA/audio_encoder/hubert_chinese_mlx.npz`
 - `checkpoints/JoyVASA/motion_template/motion_template.pkl`
-
-For animal mode, XPose is still required for animal landmark detection. XPose is licensed for non-commercial research use only, so it is not included in the MLX weights repo:
-
-```shell
-uv run python scripts/download_mlx_weights.py \
-  --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights \
-  --include-animal-xpose
-```
 
 Alternatively, export the MLX weights locally from the original checkpoints:
 
@@ -108,7 +100,7 @@ curl -L https://huggingface.co/KlingTeam/LivePortrait/resolve/main/liveportrait/
   -o checkpoints/liveportrait_torch/stitching_retargeting_module.pth
 ```
 
-For animal mode, download the official v1.1 base models and XPose checkpoint:
+For animal mode, download the official v1.1 base models:
 
 ```shell
 uv run hf download KlingTeam/LivePortrait \
@@ -116,33 +108,7 @@ uv run hf download KlingTeam/LivePortrait \
   liveportrait_animals/base_models_v1.1/motion_extractor.pth \
   liveportrait_animals/base_models_v1.1/spade_generator.pth \
   liveportrait_animals/base_models_v1.1/warping_module.pth \
-  liveportrait_animals/xpose.pth \
   --local-dir ./checkpoints
-```
-
-Download the cached XPose text embeddings used by this fork:
-
-```shell
-uv run hf download warmshao/FasterLivePortrait \
-  liveportrait_animal_onnx/clip_embedding_9.pkl \
-  liveportrait_animal_onnx/clip_embedding_68.pkl \
-  --local-dir ./checkpoints
-```
-
-Move those cached embeddings to the MLX animal checkpoint layout:
-
-```shell
-mkdir -p checkpoints/liveportrait_animals/clip_embedding
-cp checkpoints/liveportrait_animal_onnx/clip_embedding_9.pkl checkpoints/liveportrait_animals/clip_embedding/clip_embedding_9.pkl
-cp checkpoints/liveportrait_animal_onnx/clip_embedding_68.pkl checkpoints/liveportrait_animals/clip_embedding/clip_embedding_68.pkl
-```
-
-Download the MediaPipe face landmarker used by the human MLX config:
-
-```shell
-mkdir -p checkpoints/mediapipe
-curl -L https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task \
-  -o checkpoints/mediapipe/face_landmarker.task
 ```
 
 Export the MLX runtime weights after the source checkpoints are in place:
@@ -163,8 +129,8 @@ uv run python scripts/publish_mlx_weights.py \
 ```
 
 The publisher uploads converted permissive MLX runtime weights, including JoyVASA MLX
-audio-to-motion weights. It does not upload XPose, the original JoyVASA PyTorch checkpoint,
-or the original Transformers HuBERT directory.
+audio-to-motion weights. It does not upload the original JoyVASA PyTorch checkpoint or the
+original Transformers HuBERT directory.
 
 ### Run With A Video
 
@@ -193,7 +159,8 @@ Press `q` in the render window to exit.
 
 The MLX config follows the official LivePortrait quality defaults where they help this fork:
 
-- `det_thresh: 0.15` improves face detection recall for webcams and lower-light video.
+- `MlxFaceAnalysisModel` runs the exported MLX landmark checkpoint on the full frame, then refines once on a face crop. It expects a visible human face in the source/driving frame; use Animal mode for animal inputs.
+- `MlxAnimalFaceAnalysisModel` uses the same MLX bootstrap for animal source crops and falls back to a packaged cat-face cascade that emits the 9-point crop layout used by the animal pipeline.
 - `driving_option: expression-friendly` scales motion using source/driving keypoint geometry.
 - `flag_stabilize_driving_crop: true` keeps webcam framing centered without smile-driven zoom jitter.
 - `flag_lock_driving_crop_scale: true` locks the camera crop zoom after the first detected frame.
@@ -261,8 +228,7 @@ The FastAPI entrypoint is experimental in this release. On startup it reads `con
 
 ```shell
 uv run python scripts/download_mlx_weights.py \
-  --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights \
-  --include-animal-xpose
+  --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights
 ```
 
 Set `FLIP_CHECKPOINT_DIR` to use a checkpoint directory outside the repo. Set `FLIP_MLX_WEIGHTS_REPO` or `FLIP_MLX_WEIGHTS_REVISION` to override the default MLX weights repo or revision.
@@ -291,6 +257,7 @@ For a lightweight pre-push Python sanity check over the active MLX runtime paths
 uv run --group dev pyflakes \
   run.py api.py webui.py \
   src/pipelines \
+  src/models/mlx_face_analysis_model.py \
   src/models/mlx_joyvasa_audio_model.py \
   src/models/mlx_joyvasa_motion_model.py \
   scripts/download_mlx_weights.py scripts/export_mlx_weights.py \

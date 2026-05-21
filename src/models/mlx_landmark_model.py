@@ -11,6 +11,27 @@ from src.utils.crop import crop_image, _transform_pts
 from .mlx_modules.landmark import LandmarkModel
 
 
+def _letterbox_image(img_rgb, dsize):
+    h, w = img_rgb.shape[:2]
+    scale = min(dsize / w, dsize / h)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    canvas = np.zeros((dsize, dsize, img_rgb.shape[2]), dtype=img_rgb.dtype)
+    dx = (dsize - new_w) // 2
+    dy = (dsize - new_h) // 2
+    canvas[dy:dy + new_h, dx:dx + new_w] = resized
+
+    m_o2c = np.array(
+        [[scale, 0.0, dx],
+         [0.0, scale, dy],
+         [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    return canvas, {"M_c2o": np.linalg.inv(m_o2c)}
+
+
 class MlxLandmarkModel:
     def __init__(self, **kwargs):
         self.predict_type = "mlx"
@@ -41,11 +62,7 @@ class MlxLandmarkModel:
             crop_dct = crop_image(img_rgb, lmk, dsize=self.dsize, scale=1.5, vy_ratio=-0.1)
             img_crop_rgb = crop_dct["img_crop"]
         else:
-            img_crop_rgb = cv2.resize(img_rgb, (self.dsize, self.dsize))
-            scale = max(img_rgb.shape[:2]) / self.dsize
-            crop_dct = {"M_c2o": np.array([[scale, 0., 0.],
-                                            [0., scale, 0.],
-                                            [0., 0., 1.]], dtype=np.float32)}
+            img_crop_rgb, crop_dct = _letterbox_image(img_rgb, self.dsize)
         x = (img_crop_rgb.astype(np.float32) / 255.0)[None, ...]  # (1, H, W, 3) NHWC
         return x, crop_dct
 

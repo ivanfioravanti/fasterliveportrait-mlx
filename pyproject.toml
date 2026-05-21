@@ -11,8 +11,6 @@ dependencies = [
     "ffmpeg-python",
     "gradio",
     "huggingface-hub",
-    "insightface",
-    "mediapipe",
     "misaki[en,ja,zh]",
     "mlx",
     "mlx-audio",
@@ -24,9 +22,6 @@ dependencies = [
     "scikit-image",
     "scipy",
     "soundfile",
-    "torch",
-    "torchvision",
-    "transformers",
     "uvicorn",
 ]
 
@@ -34,9 +29,13 @@ dependencies = [
 dev = [
     "pyflakes",
     "pytest",
+    "torch",
+    "transformers",
 ]
 convert = [
     "onnx",
+    "torch",
+    "transformers",
 ]
 
 [tool.uv]
