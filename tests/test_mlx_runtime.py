@@ -222,3 +222,27 @@ def test_mlx_one_frame_render_is_not_black(source_name, driving_name, is_animal,
         first_frame=True,
     )
     _assert_non_black_rgb(out_crop, label=f"is_animal={is_animal}")
+
+
+def test_mlx_retargeting_smoke_changes_output():
+    _require_files(HUMAN_RUNTIME_FILES)
+
+    from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
+
+    cfg = OmegaConf.load(CFG_PATH)
+    pipe = GradioLivePortraitPipeline(cfg, is_animal=False)
+    source_path = ROOT / "assets/examples/source/s9.jpg"
+
+    closed_crop, closed_paste = pipe.execute_image(0.0, 0.0, str(source_path), True)
+    open_crop, open_paste = pipe.execute_image(0.8, 0.8, str(source_path), True)
+
+    _assert_non_black_rgb(closed_crop, label="retargeting closed crop")
+    _assert_non_black_rgb(open_crop, label="retargeting open crop")
+    assert closed_paste.shape == open_paste.shape
+    assert closed_paste.dtype == np.uint8
+    assert open_paste.dtype == np.uint8
+
+    paste_delta = np.mean(
+        np.abs(closed_paste.astype(np.int16) - open_paste.astype(np.int16))
+    )
+    assert paste_delta > 1.0
