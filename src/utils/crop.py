@@ -443,7 +443,7 @@ def paste_back(img_crop, M_c2o, img_ori, mask_ori):
     """paste back the image
     """
     dsize = (img_ori.shape[1], img_ori.shape[0])
-    result = _transform_img(img_crop, M_c2o, dsize=dsize)
+    result = _transform_img(img_crop, M_c2o, dsize=dsize, flags=cv2.INTER_LANCZOS4)
     result = np.clip(mask_ori * result + (1 - mask_ori) * img_ori, 0, 255).astype(np.uint8)
     return result
 
@@ -468,6 +468,6 @@ def paste_back_numpy(img_crop, M_c2o, img_ori, mask_ori):
         mask_ori = mask_ori[..., None]
 
     dsize = (img_ori.shape[1], img_ori.shape[0])
-    img_back = _transform_img(img_crop.astype(np.float32), M_c2o, dsize=dsize)
+    img_back = _transform_img(img_crop.astype(np.float32), M_c2o, dsize=dsize, flags=cv2.INTER_LANCZOS4)
     img_back = np.clip(mask_ori * img_back + (1 - mask_ori) * img_ori, 0, 255).astype(np.uint8)
     return img_back

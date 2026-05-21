@@ -68,6 +68,21 @@ WEIGHT_FILES = (
         "KlingTeam/LivePortrait",
     ),
     WeightFile(
+        "liveportrait_animal_mlx/retargeting_models/stitching.npz",
+        "liveportrait_animal_mlx/retargeting_models/stitching.npz",
+        "KlingTeam/LivePortrait",
+    ),
+    WeightFile(
+        "liveportrait_animal_mlx/retargeting_models/stitching_eye.npz",
+        "liveportrait_animal_mlx/retargeting_models/stitching_eye.npz",
+        "KlingTeam/LivePortrait",
+    ),
+    WeightFile(
+        "liveportrait_animal_mlx/retargeting_models/stitching_lip.npz",
+        "liveportrait_animal_mlx/retargeting_models/stitching_lip.npz",
+        "KlingTeam/LivePortrait",
+    ),
+    WeightFile(
         "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
         "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
         "jdh-algo/JoyVASA",
@@ -117,6 +132,7 @@ These files are converted from permissively licensed source checkpoints:
 - Human landmark MLX weights
 - Human stitching / eye / lip retargeting MLX weights
 - Animal LivePortrait v1.1 core MLX weights
+- Animal stitching / eye / lip retargeting MLX weights
 - JoyVASA MLX audio-to-motion weights for the configured Chinese HuBERT path
 - JoyVASA motion template runtime asset
 

@@ -287,7 +287,7 @@ class FasterLivePortraitPipeline:
                         src_infos[i].append(False)
 
                     ######## prepare for pasteback ########
-                    if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
+                    if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                         mask_ori_float = prepare_paste_back(self.mask_crop, crop_info['M_c2o'],
                                                             dsize=(img_rgb.shape[1], img_rgb.shape[0]))
                         src_infos[i].append(mask_ori_float)
@@ -343,6 +343,21 @@ class FasterLivePortraitPipeline:
 
         return kp_driving_new
 
+    def _relative_animal_keypoints(self, j, x_s_info, x_s, x_c_s, x_d_i_info, x_d_0_info, R_d_i, R_d_0, **kwargs):
+        scale_new = x_s_info["scale"]
+        t_i = x_d_i_info["t"].copy()
+        t_0 = x_d_0_info["t"].copy()
+        t_i[..., 2] = 0
+        t_0[..., 2] = 0
+
+        x_d_i = scale_new * (x_c_s @ R_d_i + x_d_i_info["exp"]) + t_i
+        x_d_0 = scale_new * (x_c_s @ R_d_0 + x_d_0_info["exp"]) + t_0
+
+        cache = self.expression_motion_cache.setdefault(j, {})
+        if kwargs.get("first_frame", False) or "animal_motion_multiplier" not in cache:
+            cache["animal_motion_multiplier"] = utils.calc_motion_multiplier(x_s, x_d_0)
+        return (x_d_i - x_d_0) * cache["animal_motion_multiplier"] + x_s
+
     def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio,
              I_p_pstbk, **kwargs):
         out_crop = None
@@ -366,14 +381,25 @@ class FasterLivePortraitPipeline:
                         c_d_eye_before_animation_frame_zero, source_lmk)
                     eye_delta_before_animation = self.retarget_eye(x_s, combined_eye_ratio_tensor_before_animation)
 
-                if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and \
-                        self.cfg.infer_params.flag_stitching:
+                if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                     mask_ori_float = prepare_paste_back(self.mask_crop, M,
                                                         dsize=(self.src_imgs[0].shape[1], self.src_imgs[0].shape[0]))
             else:
                 x_s_info, source_lmk, R_s, f_s, x_s, x_c_s, lip_delta_before_animation, flag_lip_zero, mask_ori_float, M = \
                     src_info[j]
-            if self.cfg.infer_params.flag_relative_motion:
+            if self.is_animal and self.cfg.infer_params.flag_relative_motion:
+                x_d_i_new = self._relative_animal_keypoints(
+                    j,
+                    x_s_info,
+                    x_s,
+                    x_c_s,
+                    x_d_i_info,
+                    x_d_0_info,
+                    R_d_i,
+                    R_d_0,
+                    **kwargs,
+                )
+            elif self.cfg.infer_params.flag_relative_motion:
                 if self.cfg.infer_params.animation_region in ["all", "pose"]:
                     if self.is_source_video:
                         R_new = self.R_d_smooth.process(R_d_i)
@@ -462,8 +488,9 @@ class FasterLivePortraitPipeline:
                 else:
                     t_new = x_s_info['t'].copy()
 
-            t_new[..., 2] = 0  # zero tz
-            x_d_i_new = scale_new * (x_c_s @ R_new + delta_new) + t_new
+            if not (self.is_animal and self.cfg.infer_params.flag_relative_motion):
+                t_new[..., 2] = 0  # zero tz
+                x_d_i_new = scale_new * (x_c_s @ R_new + delta_new) + t_new
             if (not self.is_animal and not self.is_source_video and self.cfg.infer_params.flag_relative_motion and
                     self.cfg.infer_params.get("driving_option", "pose-friendly") == "expression-friendly"):
                 cache = self.expression_motion_cache.setdefault(j, {})
@@ -526,7 +553,7 @@ class FasterLivePortraitPipeline:
                 )
             else:
                 out_crop = warping_spade.predict(f_s, x_s, x_d_i_new)
-            if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
+            if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                 I_p_pstbk = paste_back_numpy(out_crop, M, I_p_pstbk, mask_ori_float)
         if realtime:
             out_crop_np = _image_to_uint8_numpy(out_crop)

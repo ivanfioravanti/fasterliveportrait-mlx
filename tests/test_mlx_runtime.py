@@ -35,6 +35,9 @@ ANIMAL_RUNTIME_FILES = HUMAN_RUNTIME_FILES + (
     ROOT / "checkpoints/liveportrait_animal_mlx/base_models_v1.1/spade_generator.npz",
     ROOT / "checkpoints/liveportrait_animal_mlx/base_models_v1.1/motion_extractor.npz",
     ROOT / "checkpoints/liveportrait_animal_mlx/base_models_v1.1/appearance_feature_extractor.npz",
+    ROOT / "checkpoints/liveportrait_animal_mlx/retargeting_models/stitching.npz",
+    ROOT / "checkpoints/liveportrait_animal_mlx/retargeting_models/stitching_eye.npz",
+    ROOT / "checkpoints/liveportrait_animal_mlx/retargeting_models/stitching_lip.npz",
 )
 
 
@@ -118,6 +121,9 @@ def test_runtime_config_resolves_checkpoint_paths_to_hf_snapshots(tmp_path, monk
     assert cfg.models.face_analysis.model_path == str(mlx_snapshot / "liveportrait_mlx" / "landmark.npz")
     assert cfg.animal_models.warping_spade.model_path[0] == str(
         mlx_snapshot / "liveportrait_animal_mlx" / "base_models_v1.1" / "warping_module.npz"
+    )
+    assert cfg.animal_models.stitching.model_path == str(
+        mlx_snapshot / "liveportrait_animal_mlx" / "retargeting_models" / "stitching.npz"
     )
     assert cfg.animal_models.face_analysis.model_path == str(mlx_snapshot / "liveportrait_mlx" / "landmark.npz")
     assert cfg.joyvasa_models.motion_template_path == str(

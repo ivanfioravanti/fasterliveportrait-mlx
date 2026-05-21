@@ -54,6 +54,7 @@ def change_animal_model(is_animal):
     ensure_runtime_assets(gradio_pipeline.cfg)
     gradio_pipeline.clean_models()
     gradio_pipeline.init_models(is_animal=is_animal)
+    return gr.update(value=not is_animal)
 
 
 def update_source_mode(mode):
@@ -399,6 +400,7 @@ with gr.Blocks() as demo:
     flag_is_animal.change(
         change_animal_model,
         inputs=[flag_is_animal],
+        outputs=[flag_stitching],
         concurrency_limit=1,
         concurrency_id="flp_pipeline",
     )

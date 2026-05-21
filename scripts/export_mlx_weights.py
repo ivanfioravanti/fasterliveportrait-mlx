@@ -145,6 +145,7 @@ HUMAN_STITCHING = (
 )
 
 OFFICIAL_STITCHING = "liveportrait_torch/stitching_retargeting_module.pth"
+OFFICIAL_ANIMAL_STITCHING = "liveportrait_animals/retargeting_models/stitching_retargeting_module.pth"
 JOYVASA_MOTION_SRC = "JoyVASA/motion_generator/motion_generator_hubert_chinese.pt"
 JOYVASA_MOTION_DST = "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz"
 JOYVASA_AUDIO_ENCODER_SRC = "chinese-hubert-base"
@@ -233,6 +234,15 @@ def export_human_stitching(checkpoints_dir: Path, dst_dir: Path, source: str, of
             export_stitching(checkpoints_dir / rel_onnx, dst)
 
 
+def export_animal_stitching(dst_dir: Path, official_path: Path) -> None:
+    if not official_path.exists():
+        print(f"skip missing {official_path}")
+        return
+
+    for name, module_name, _ in HUMAN_STITCHING:
+        export_stitching_layers(_load_stitching_from_torch(str(official_path), module_name), dst_dir / f"{name}.npz")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export checkpoint containers to MLX npz weights.")
     parser.add_argument("--checkpoints-dir", default="checkpoints", help="checkpoint root")
@@ -248,6 +258,11 @@ def main() -> None:
         help="path to official stitching_retargeting_module.pth",
     )
     parser.add_argument("--include-animal", action="store_true", help="also export animal core MLX weights")
+    parser.add_argument(
+        "--official-animal-stitching-path",
+        default=None,
+        help="path to official animal stitching_retargeting_module.pth",
+    )
     parser.add_argument("--include-joyvasa", action="store_true", help="also export JoyVASA MLX motion/audio weights")
     parser.add_argument("--joyvasa-motion-src", default=JOYVASA_MOTION_SRC, help="JoyVASA PyTorch motion checkpoint")
     parser.add_argument("--joyvasa-motion-dst", default=JOYVASA_MOTION_DST, help="JoyVASA MLX motion npz output")
@@ -259,6 +274,11 @@ def main() -> None:
     human_out = checkpoints_dir / "liveportrait_mlx"
     official_stitching_path = Path(args.official_stitching_path) if args.official_stitching_path else (
         checkpoints_dir / OFFICIAL_STITCHING
+    )
+    official_animal_stitching_path = (
+        Path(args.official_animal_stitching_path)
+        if args.official_animal_stitching_path
+        else checkpoints_dir / OFFICIAL_ANIMAL_STITCHING
     )
 
     export_core_models(checkpoints_dir, HUMAN_CORE)
@@ -274,6 +294,10 @@ def main() -> None:
     )
     if args.include_animal:
         export_core_models(checkpoints_dir, ANIMAL_CORE)
+        export_animal_stitching(
+            checkpoints_dir / "liveportrait_animal_mlx" / "retargeting_models",
+            official_animal_stitching_path,
+        )
     if args.include_joyvasa:
         export_joyvasa_motion(checkpoints_dir, args.joyvasa_motion_src, args.joyvasa_motion_dst)
         export_joyvasa_audio(checkpoints_dir, args.joyvasa_motion_src, args.joyvasa_audio_src, args.joyvasa_audio_dst)

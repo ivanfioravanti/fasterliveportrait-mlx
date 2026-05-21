@@ -13,6 +13,7 @@ DEFAULT_MLX_WEIGHTS_REPO = "ivanfioravanti/FasterLivePortrait-MLX-weights"
 MLX_ALLOW_PATTERNS = (
     "liveportrait_mlx/*.npz",
     "liveportrait_animal_mlx/base_models_v1.1/*.npz",
+    "liveportrait_animal_mlx/retargeting_models/*.npz",
     "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
     "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
     "JoyVASA/motion_template/motion_template.pkl",

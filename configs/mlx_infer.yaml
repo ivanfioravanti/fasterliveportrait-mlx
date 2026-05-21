@@ -65,17 +65,17 @@ animal_models:
     name: "MlxStitchingModel"
     predict_type: "mlx"
     dtype: "fp32"
-    model_path: "./checkpoints/liveportrait_mlx/stitching.npz"
+    model_path: "./checkpoints/liveportrait_animal_mlx/retargeting_models/stitching.npz"
   stitching_eye_retarget:
     name: "MlxStitchingModel"
     predict_type: "mlx"
     dtype: "fp32"
-    model_path: "./checkpoints/liveportrait_mlx/stitching_eye.npz"
+    model_path: "./checkpoints/liveportrait_animal_mlx/retargeting_models/stitching_eye.npz"
   stitching_lip_retarget:
     name: "MlxStitchingModel"
     predict_type: "mlx"
     dtype: "fp32"
-    model_path: "./checkpoints/liveportrait_mlx/stitching_lip.npz"
+    model_path: "./checkpoints/liveportrait_animal_mlx/retargeting_models/stitching_lip.npz"
   landmark:
     name: "MlxLandmarkModel"
     predict_type: "mlx"
