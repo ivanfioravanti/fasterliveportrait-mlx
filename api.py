@@ -23,7 +23,10 @@ from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeli
 from src.runtime_assets import ensure_runtime_assets
 from src.utils.ffmpeg_utils import run_ffmpeg
 from src.utils.utils import video_has_audio
+from src.utils.tqdm_utils import configure_tqdm_single_process
 from src.utils import logger
+
+configure_tqdm_single_process()
 
 # model dir
 project_dir = os.path.dirname(__file__)

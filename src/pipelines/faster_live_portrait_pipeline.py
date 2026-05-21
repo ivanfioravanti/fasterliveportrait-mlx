@@ -14,7 +14,10 @@ from .. import models
 from ..utils.crop import crop_image, parse_bbox_from_landmark, crop_image_by_bbox, paste_back_numpy
 from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matrix, calc_lip_close_ratio, \
     calc_eye_close_ratio, transform_keypoint, concat_feat
+from ..utils.tqdm_utils import configure_tqdm_single_process
 from src.utils import utils
+
+configure_tqdm_single_process()
 
 
 def _image_to_uint8_numpy(image):

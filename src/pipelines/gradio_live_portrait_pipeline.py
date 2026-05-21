@@ -17,8 +17,11 @@ from ..utils.utils import video_has_audio
 from ..utils.utils import resize_to_limit, prepare_paste_back, transform_keypoint
 from ..utils.crop import crop_image, paste_back_numpy, _transform_pts
 from ..utils.ffmpeg_utils import run_ffmpeg
+from ..utils.tqdm_utils import configure_tqdm_single_process
 from src.utils import utils
 import platform
+
+configure_tqdm_single_process()
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"

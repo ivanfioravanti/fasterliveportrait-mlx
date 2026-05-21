@@ -7,6 +7,10 @@ from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
+from .utils.tqdm_utils import configure_tqdm_single_process
+
+configure_tqdm_single_process()
+
 
 DEFAULT_MLX_WEIGHTS_REPO = "ivanfioravanti/FasterLivePortrait-MLX-weights"
 

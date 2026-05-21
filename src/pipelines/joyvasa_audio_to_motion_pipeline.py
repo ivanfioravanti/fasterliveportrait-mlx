@@ -17,7 +17,10 @@ from scipy.signal import resample_poly
 
 from ..models.mlx_joyvasa_audio_model import load_mlx_joyvasa_audio_npz
 from ..models.mlx_joyvasa_motion_model import load_mlx_joyvasa_motion_npz
+from ..utils.tqdm_utils import configure_tqdm_single_process
 from ..utils import utils
+
+configure_tqdm_single_process()
 
 
 class JoyVASAAudio2MotionPipeline:

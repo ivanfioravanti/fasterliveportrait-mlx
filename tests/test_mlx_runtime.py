@@ -148,6 +148,18 @@ def test_importing_mlx_runtime_does_not_import_legacy_runtime_deps():
     assert result.stdout.strip() == '{"mediapipe": false, "onnxruntime": false, "torch": false}'
 
 
+def test_tqdm_uses_thread_lock_without_multiprocessing_semaphore():
+    import importlib
+
+    from tqdm import tqdm
+
+    importlib.import_module("src.pipelines.faster_live_portrait_pipeline")
+
+    lock = tqdm.get_lock()
+    assert "multiprocessing" not in type(lock).__module__
+    assert not hasattr(lock, "mp_lock")
+
+
 def test_mlx_face_analysis_predicts_landmarks_without_mediapipe():
     _require_files((ROOT / "assets/examples/source/s10.jpg", ROOT / "checkpoints/liveportrait_mlx/landmark.npz"))
 

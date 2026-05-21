@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .common import PositionalEncoding, enc_dec_mask, pad_audio
 from tqdm import tqdm
+from src.utils.tqdm_utils import configure_tqdm_single_process
+
+configure_tqdm_single_process()
 
 
 class DiffusionSchedule(nn.Module):

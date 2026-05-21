@@ -34,6 +34,9 @@ from colorama import Fore, Style
 from src.runtime_assets import ensure_runtime_assets
 from src.utils.ffmpeg_utils import run_ffmpeg
 from src.utils.mlx_profiles import MLX_PROFILE_CHOICES, apply_mlx_profile, describe_mlx_profile
+from src.utils.tqdm_utils import configure_tqdm_single_process
+
+configure_tqdm_single_process()
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"
