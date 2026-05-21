@@ -6,11 +6,18 @@ The entrance of the gradio
 import gradio as gr
 import os.path as osp
 import shlex
+import threading
+import gradio.flagging as gradio_flagging
 from omegaconf import OmegaConf
 
 from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
 from src.pipelines.mlx_audio_tts import MLX_AUDIO_KOKORO_VOICES
 from src.runtime_assets import ensure_runtime_assets
+
+# Gradio's CSVLogger uses multiprocessing.Lock for example/flagging logs. This
+# local single-process UI only needs thread safety, and using threading.Lock
+# avoids Python 3.13 resource_tracker semaphore leak warnings at shutdown.
+gradio_flagging.Lock = threading.Lock
 
 
 def load_description(fp):
