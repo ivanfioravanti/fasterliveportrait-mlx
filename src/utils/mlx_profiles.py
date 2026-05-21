@@ -40,8 +40,34 @@ _BASE_PROFILE = {
 
 MLX_PROFILES = {
     "quality": {
-        "description": "Highest-fidelity MLX path; no temporal warp reuse.",
+        "description": "Highest-fidelity default MLX path; no temporal warp reuse.",
         "settings": dict(_BASE_PROFILE),
+    },
+    "reference": {
+        "description": "Validation-oriented MLX path with fusions, compile wrappers, and temporal reuse disabled.",
+        "settings": {
+            **_BASE_PROFILE,
+            "FLP_MLX_2D_MASK": "0",
+            "FLP_MLX_MASK_BACKEND": "native",
+            "FLP_MLX_COMPILE_HOURGLASS": "0",
+            "FLP_MLX_COMPILE_SPADE": "0",
+            "FLP_MLX_COMPILE_WARPING": "0",
+            "FLP_MLX_COMPILE_MOTION": "0",
+            "FLP_MLX_COMPILE_APPEARANCE": "0",
+            "FLP_MLX_CACHE_SOURCE_GAUSSIAN": "0",
+            "FLP_MLX_FUSED_UINT8": "0",
+            "FLP_MLX_FUSED_DEFORMATION": "0",
+            "FLP_MLX_FUSED_SPARSE_SAMPLE": "0",
+            "FLP_MLX_FUSED_HOURGLASS_INPUT": "0",
+            "FLP_MLX_CONV3D_BACKEND": "native",
+            "FLP_MLX_GS3D_GATHER": "1",
+            "FLP_MLX_WARP_OUT_BACKEND": "standard",
+            "FLP_MLX_WARP_FOURTH_BACKEND": "native",
+            "FLP_MLX_SPADE_BF16_NATIVE_NORM": "0",
+            "FLP_MLX_SPADE_SHORTCUT_BACKEND": "native",
+            "FLP_MLX_TEMPORAL_WARP_INTERVAL": "1",
+            "FLP_MLX_TEMPORAL_WARP_THRESHOLD": "0",
+        },
     },
     "speed": {
         "description": "Faster realtime MLX path; reuses warping every other frame with adaptive refresh.",

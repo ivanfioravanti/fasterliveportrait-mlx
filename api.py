@@ -6,9 +6,6 @@ import shutil
 from typing import Optional
 import io
 import os
-import subprocess
-import sys
-import shlex
 import cv2
 import time
 import numpy as np
@@ -23,12 +20,13 @@ from omegaconf import OmegaConf
 from fastapi.responses import StreamingResponse
 from zipfile import ZipFile
 from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
+from src.runtime_assets import ensure_runtime_assets
+from src.utils.ffmpeg_utils import run_ffmpeg
 from src.utils.utils import video_has_audio
 from src.utils import logger
 
 # model dir
 project_dir = os.path.dirname(__file__)
-checkpoints_dir = os.environ.get("FLIP_CHECKPOINT_DIR", os.path.join(project_dir, "checkpoints"))
 log_dir = os.path.join(project_dir, "logs")
 os.makedirs(log_dir, exist_ok=True)
 result_dir = os.path.join(project_dir, "results")
@@ -39,7 +37,6 @@ logger_f = logger.get_logger("faster_liveportrait_api", log_file=os.path.join(lo
 app = FastAPI()
 
 global pipe
-DEFAULT_MLX_WEIGHTS_REPO = "ivanfioravanti/FasterLivePortrait-MLX-weights"
 
 if platform.system().lower() == 'windows':
     FFMPEG = "third_party/ffmpeg-7.0.1-full_build/bin/ffmpeg.exe"
@@ -47,83 +44,12 @@ else:
     FFMPEG = "ffmpeg"
 
 
-def check_all_checkpoints_exist(infer_cfg):
-    """
-    check whether all checkpoints exist
-    :return:
-    """
-    def resolve_model_path(path):
-        return path.replace("./checkpoints", checkpoints_dir)
-
-    def check_group(group):
-        for name in group:
-            model_path = group[name].model_path
-            if isinstance(model_path, str):
-                group[name].model_path = resolve_model_path(model_path)
-                if not os.path.exists(group[name].model_path):
-                    return False
-            else:
-                for i in range(len(model_path)):
-                    model_path[i] = resolve_model_path(model_path[i])
-                    if not os.path.exists(model_path[i]):
-                        return False
-        return True
-
-    if not check_group(infer_cfg.models):
-        return False
-    if not check_group(infer_cfg.animal_models):
-        return False
-
-    animal_xpose = infer_cfg.get("animal_xpose", None)
-    if animal_xpose is not None:
-        animal_xpose.model_path = resolve_model_path(animal_xpose.model_path)
-        if not os.path.exists(animal_xpose.model_path):
-            return False
-        animal_xpose.embeddings_cache_path = resolve_model_path(animal_xpose.embeddings_cache_path)
-        for suffix in ("_9.pkl", "_68.pkl"):
-            if not os.path.exists(f"{animal_xpose.embeddings_cache_path}{suffix}"):
-                return False
-    return True
-
-
-def download_runtime_checkpoints(infer_cfg):
-    repo_id = os.environ.get("FLIP_MLX_WEIGHTS_REPO", DEFAULT_MLX_WEIGHTS_REPO)
-    revision = os.environ.get("FLIP_MLX_WEIGHTS_REVISION")
-    download_script = os.path.join(project_dir, "scripts", "download_mlx_weights.py")
-    download_cmd = [
-        sys.executable,
-        download_script,
-        "--repo-id",
-        repo_id,
-        "--checkpoints-dir",
-        checkpoints_dir,
-    ]
-    if revision:
-        download_cmd.extend(["--revision", revision])
-    if infer_cfg.get("animal_xpose", None) is not None:
-        download_cmd.append("--include-animal-xpose")
-
-    logger_f.info(f"download MLX runtime assets: {shlex.join(download_cmd)}")
-    subprocess.run(download_cmd, check=True)
-    logger_f.info(f"Download checkpoints to {checkpoints_dir} successful")
-
-
 @app.on_event("startup")
 async def startup_event():
     global pipe
     cfg_file = os.path.join(project_dir, "configs/mlx_infer.yaml")
     infer_cfg = OmegaConf.load(cfg_file)
-    checkpoints_exist = check_all_checkpoints_exist(infer_cfg)
-
-    # first: download MLX runtime assets if they do not exist
-    if not checkpoints_exist:
-        try:
-            download_runtime_checkpoints(infer_cfg)
-        except subprocess.CalledProcessError as exc:
-            logger_f.error(f"Download checkpoints to {checkpoints_dir} failed: {exc}")
-            raise
-        if not check_all_checkpoints_exist(infer_cfg):
-            raise RuntimeError(f"Downloaded assets are incomplete in {checkpoints_dir}")
+    ensure_runtime_assets(infer_cfg, log=logger_f)
     infer_cfg.infer_params.flag_pasteback = True
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=True)
 
@@ -182,14 +108,14 @@ def run_with_video(source_image_path, driving_video_path, save_dir):
     vout_org.release()
     if video_has_audio(driving_video_path):
         vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
-        subprocess.call(
+        run_ffmpeg(
             [FFMPEG, "-y", "-i", vsave_crop_path, "-i", driving_video_path,
              "-b:v", "10M", "-c:v",
              "libx264", "-map", "0:v", "-map", "1:a",
              "-c:a", "aac",
              "-pix_fmt", "yuv420p", "-shortest", vsave_crop_path_new])
         vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
-        subprocess.call(
+        run_ffmpeg(
             [FFMPEG, "-y", "-i", vsave_org_path, "-i", driving_video_path,
              "-b:v", "10M", "-c:v",
              "libx264", "-map", "0:v", "-map", "1:a",

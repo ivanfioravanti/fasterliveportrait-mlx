@@ -23,6 +23,34 @@ import mlx.utils as mu
 _BLOCK_RE = re.compile(r"^(stages\.\d+\.\d+)\.dwconv\.weight$")
 
 
+def _expected_param_shapes(model) -> Dict[str, tuple[int, ...]]:
+    return {key: tuple(value.shape) for key, value in mu.tree_flatten(model.parameters())}
+
+
+def _validate_landmark_state(model, state: Dict[str, mx.array]) -> None:
+    expected_shapes = _expected_param_shapes(model)
+    actual_keys = set(state.keys())
+    expected_keys = set(expected_shapes.keys())
+    missing = expected_keys - actual_keys
+    extra = actual_keys - expected_keys
+    bad_shapes = [
+        (key, tuple(state[key].shape), expected_shapes[key])
+        for key in sorted(actual_keys & expected_keys)
+        if tuple(state[key].shape) != expected_shapes[key]
+    ]
+    if missing or extra or bad_shapes:
+        shape_lines = [
+            f"{key}: got {actual}, expected {expected}"
+            for key, actual, expected in bad_shapes[:8]
+        ]
+        raise ValueError(
+            "landmark state mismatch.\n"
+            f"  missing: {sorted(missing)[:8]}\n"
+            f"  extra: {sorted(extra)[:8]}\n"
+            f"  bad shapes: {shape_lines}"
+        )
+
+
 def _block_pwconv_map(model) -> Dict[str, Tuple[str, str]]:
     """For each block stages.X.Y, return (pwconv1_const_name, pwconv2_const_name)."""
     in_to_nodes: Dict[str, list] = {}
@@ -124,9 +152,18 @@ def load_landmark_from_onnx(model, onnx_path: str) -> None:
     block_pw = _block_pwconv_map(onnx_model)
 
     new_state: Dict[str, mx.array] = {}
+    expected_shapes = _expected_param_shapes(model)
 
     def put(key: str, arr: np.ndarray):
-        new_state[key] = mx.array(np.ascontiguousarray(arr.astype(np.float32)))
+        arr = np.ascontiguousarray(arr.astype(np.float32))
+        expected_shape = expected_shapes.get(key)
+        if expected_shape is None:
+            raise ValueError(f"unexpected landmark key extracted from ONNX: {key}")
+        if tuple(arr.shape) != expected_shape:
+            raise ValueError(f"landmark shape mismatch for {key}: got {arr.shape}, expected {expected_shape}")
+        if not np.isfinite(arr).all():
+            raise ValueError(f"landmark weights for {key} contain NaN or Inf")
+        new_state[key] = mx.array(arr)
 
     # ---- Stem (downsample_layers.0) ----
     stem_w = init_map["downsample_layers.0.0.weight"]  # PyTorch (96, 3, 4, 4)
@@ -186,28 +223,18 @@ def load_landmark_from_onnx(model, onnx_path: str) -> None:
         put(f"{head}.weight", init_map[f"{head}.weight"])
         put(f"{head}.bias", init_map[f"{head}.bias"])
 
-    expected = {k for k, _ in mu.tree_flatten(model.parameters())}
-    missing = expected - set(new_state.keys())
-    extra = set(new_state.keys()) - expected
-    if missing or extra:
-        raise ValueError(
-            f"landmark state mismatch.\n  missing: {sorted(missing)[:8]}\n  extra: {sorted(extra)[:8]}"
-        )
+    _validate_landmark_state(model, new_state)
     model.update(mu.tree_unflatten(list(new_state.items())))
 
 
 def load_landmark_from_npz(model, npz_path: str) -> None:
     with np.load(npz_path) as data:
-        new_state = {
-            key: mx.array(np.ascontiguousarray(data[key].astype(np.float32)))
-            for key in data.files
-        }
+        new_state = {}
+        for key in data.files:
+            arr = np.ascontiguousarray(data[key].astype(np.float32))
+            if not np.isfinite(arr).all():
+                raise ValueError(f"landmark weights for {key} contain NaN or Inf")
+            new_state[key] = mx.array(arr)
 
-    expected = {k for k, _ in mu.tree_flatten(model.parameters())}
-    missing = expected - set(new_state.keys())
-    extra = set(new_state.keys()) - expected
-    if missing or extra:
-        raise ValueError(
-            f"landmark state mismatch.\n  missing: {sorted(missing)[:8]}\n  extra: {sorted(extra)[:8]}"
-        )
+    _validate_landmark_state(model, new_state)
     model.update(mu.tree_unflatten(list(new_state.items())))

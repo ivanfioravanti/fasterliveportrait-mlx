@@ -22,7 +22,6 @@
 """
 import os
 import argparse
-import subprocess
 import cv2
 import time
 import numpy as np
@@ -32,6 +31,8 @@ import pickle
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from colorama import Fore, Style
+from src.runtime_assets import ensure_runtime_assets
+from src.utils.ffmpeg_utils import run_ffmpeg
 from src.utils.mlx_profiles import MLX_PROFILE_CHOICES, apply_mlx_profile, describe_mlx_profile
 
 if platform.system().lower() == 'windows':
@@ -49,6 +50,39 @@ def apply_quality_options(infer_cfg, args):
             group = getattr(infer_cfg, group_name, None)
             if group is not None and "face_analysis" in group:
                 group.face_analysis.det_thresh = det_thresh
+
+
+def apply_cli_overrides(infer_cfg, args):
+    infer_params = infer_cfg.infer_params
+    crop_params = infer_cfg.crop_params
+    bool_overrides = {
+        "relative_motion": (infer_params, "flag_relative_motion"),
+        "do_crop": (infer_params, "flag_do_crop"),
+        "stitching": (infer_params, "flag_stitching"),
+        "crop_driving_video": (infer_params, "flag_crop_driving_video"),
+        "video_editing_head_rotation": (infer_params, "flag_video_editing_head_rotation"),
+    }
+    for arg_name, (section, key) in bool_overrides.items():
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            section[key] = value
+
+    value_overrides = {
+        "driving_multiplier": (infer_params, "driving_multiplier"),
+        "animation_region": (infer_params, "animation_region"),
+        "driving_smooth_observation_variance": (infer_params, "driving_smooth_observation_variance"),
+        "cfg_scale": (infer_params, "cfg_scale"),
+        "src_scale": (crop_params, "src_scale"),
+        "src_vx_ratio": (crop_params, "src_vx_ratio"),
+        "src_vy_ratio": (crop_params, "src_vy_ratio"),
+        "dri_scale": (crop_params, "dri_scale"),
+        "dri_vx_ratio": (crop_params, "dri_vx_ratio"),
+        "dri_vy_ratio": (crop_params, "dri_vy_ratio"),
+    }
+    for arg_name, (section, key) in value_overrides.items():
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            section[key] = value
 
 
 def maybe_enable_auto_driving_crop(infer_cfg, vcap):
@@ -69,8 +103,10 @@ def run_with_video(args):
 
     print(Fore.RED+'Render,  Q > exit,  S > Stitching,  Z > RelativeMotion,  X > AnimationRegion,  C > CropDrivingVideo, KL > AdjustSourceScale, NM > AdjustDriverScale,  Space > Webcamassource,  R > SwitchRealtimeWebcamUpdate'+Style.RESET_ALL)
     infer_cfg = OmegaConf.load(args.cfg)
+    ensure_runtime_assets(infer_cfg)
     infer_cfg.infer_params.flag_pasteback = args.paste_back
     apply_quality_options(infer_cfg, args)
+    apply_cli_overrides(infer_cfg, args)
 
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=args.animal)
     ret = pipe.prepare_source(args.src_image, realtime=args.realtime)
@@ -149,14 +185,14 @@ def run_with_video(args):
         vout_org.release()
         if video_has_audio(args.dri_video):
             vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
-            subprocess.call(
+            run_ffmpeg(
                 [FFMPEG, "-i", vsave_crop_path, "-i", args.dri_video,
                  "-b:v", "10M", "-c:v",
                  "libx264", "-map", "0:v", "-map", "1:a",
                  "-c:a", "aac",
                  "-pix_fmt", "yuv420p", vsave_crop_path_new, "-y", "-shortest"])
             vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
-            subprocess.call(
+            run_ffmpeg(
                 [FFMPEG, "-i", vsave_org_path, "-i", args.dri_video,
                  "-b:v", "10M", "-c:v",
                  "libx264", "-map", "0:v", "-map", "1:a",
@@ -194,8 +230,10 @@ def run_with_pkl(args):
     from src.utils.utils import video_has_audio
 
     infer_cfg = OmegaConf.load(args.cfg)
+    ensure_runtime_assets(infer_cfg)
     infer_cfg.infer_params.flag_pasteback = args.paste_back
     apply_quality_options(infer_cfg, args)
+    apply_cli_overrides(infer_cfg, args)
 
     pipe = FasterLivePortraitPipeline(cfg=infer_cfg, is_animal=args.animal)
     ret = pipe.prepare_source(args.src_image, realtime=args.realtime)
@@ -313,14 +351,14 @@ def run_with_pkl(args):
         vout_org.release()
         if video_has_audio(args.dri_video):
             vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
-            subprocess.call(
+            run_ffmpeg(
                 [FFMPEG, "-i", vsave_crop_path, "-i", args.dri_video,
                  "-b:v", "10M", "-c:v",
                  "libx264", "-map", "0:v", "-map", "1:a",
                  "-c:a", "aac",
                  "-pix_fmt", "yuv420p", vsave_crop_path_new, "-y", "-shortest"])
             vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
-            subprocess.call(
+            run_ffmpeg(
                 [FFMPEG, "-i", vsave_org_path, "-i", args.dri_video,
                  "-b:v", "10M", "-c:v",
                  "libx264", "-map", "0:v", "-map", "1:a",
@@ -342,14 +380,14 @@ def run_with_pkl(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Faster Live Portrait Pipeline')
-    parser.add_argument('--src_image', required=False, type=str, default="assets/examples/source/s12.jpg",
+    parser.add_argument('--src_image', '--src-image', required=False, type=str, default="assets/examples/source/s12.jpg",
                         help='source image')
-    parser.add_argument('--dri_video', required=False, type=str, default="assets/examples/driving/d14.mp4",
+    parser.add_argument('--dri_video', '--dri-video', required=False, type=str, default="assets/examples/driving/d14.mp4",
                         help='driving video')
     parser.add_argument('--cfg', required=False, type=str, default="configs/mlx_infer.yaml", help='inference config')
     parser.add_argument('--realtime', action='store_true', help='realtime inference')
     parser.add_argument('--animal', action='store_true', help='use animal model')
-    parser.add_argument('--paste_back', action='store_true', default=False, help='paste back to origin image')
+    parser.add_argument('--paste_back', '--paste-back', action='store_true', default=False, help='paste back to origin image')
     parser.add_argument('--det-thresh', type=float, default=None,
                         help='face detection threshold; lower values improve recall on webcam frames')
     parser.add_argument('--driving-option', choices=["expression-friendly", "pose-friendly"], default=None,
@@ -360,6 +398,36 @@ if __name__ == '__main__':
         default='quality',
         help='named MLX runtime profile; use "custom" to keep explicit FLP_MLX_* environment values',
     )
+    parser.add_argument('--relative-motion', action=argparse.BooleanOptionalAction, default=None,
+                        help='override relative motion setting')
+    parser.add_argument('--do-crop', action=argparse.BooleanOptionalAction, default=None,
+                        help='override source crop setting')
+    parser.add_argument('--stitching', action=argparse.BooleanOptionalAction, default=None,
+                        help='override stitching setting')
+    parser.add_argument('--crop-driving-video', action=argparse.BooleanOptionalAction, default=None,
+                        help='override driving-video crop setting')
+    parser.add_argument('--video-editing-head-rotation', action=argparse.BooleanOptionalAction, default=None,
+                        help='override relative head rotation setting for video sources')
+    parser.add_argument('--driving-multiplier', type=float, default=None,
+                        help='override driving multiplier')
+    parser.add_argument('--animation-region', choices=["exp", "pose", "lip", "eyes", "all"], default=None,
+                        help='override animation region')
+    parser.add_argument('--driving-smooth-observation-variance', type=float, default=None,
+                        help='override video driving smoothing strength')
+    parser.add_argument('--cfg-scale', type=float, default=None,
+                        help='override JoyVASA cfg scale')
+    parser.add_argument('--src-scale', type=float, default=None,
+                        help='override source crop scale')
+    parser.add_argument('--src-vx-ratio', type=float, default=None,
+                        help='override source crop x offset')
+    parser.add_argument('--src-vy-ratio', type=float, default=None,
+                        help='override source crop y offset')
+    parser.add_argument('--dri-scale', type=float, default=None,
+                        help='override driving crop scale')
+    parser.add_argument('--dri-vx-ratio', type=float, default=None,
+                        help='override driving crop x offset')
+    parser.add_argument('--dri-vy-ratio', type=float, default=None,
+                        help='override driving crop y offset')
     args, unknown = parser.parse_known_args()
 
     applied = apply_mlx_profile(args.mlx_profile)

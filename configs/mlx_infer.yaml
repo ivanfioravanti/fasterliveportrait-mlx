@@ -89,6 +89,7 @@ animal_models:
     refine_iters: 1
     min_face_size: 40
     max_detector_dim: 960
+    prefer_cat_cascade: True
 
 joyvasa_models:
   motion_mlx_model_path: "checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz"

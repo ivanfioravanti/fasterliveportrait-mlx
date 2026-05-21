@@ -13,9 +13,10 @@ from .mlx_face_analysis_model import MlxFaceAnalysisModel
 class MlxAnimalFaceAnalysisModel:
     """Return animal crop landmarks for the same list-of-arrays pipeline contract.
 
-    The MLX landmark bootstrap is preferred because it produces dense landmarks.
-    If that bootstrap cannot lock on, a packaged OpenCV cat-face cascade provides
-    a no-PyTorch fallback and emits the 9-point layout already supported by crop.py.
+    A packaged OpenCV cat-face cascade is preferred for cat-like sources and
+    emits the 9-point layout already supported by crop.py. If that cascade
+    cannot lock on, the MLX landmark bootstrap provides a no-PyTorch fallback
+    for broader animal inputs.
     """
 
     _CAT_CASCADE_NAMES = (
@@ -32,6 +33,7 @@ class MlxAnimalFaceAnalysisModel:
         self.cascade_min_neighbors = int(kwargs.get("cascade_min_neighbors", 3))
         self.enable_mlx_bootstrap = bool(kwargs.get("enable_mlx_bootstrap", True))
         self.enable_cat_cascade = bool(kwargs.get("enable_cat_cascade", True))
+        self.prefer_cat_cascade = bool(kwargs.get("prefer_cat_cascade", True))
 
         self.bootstrap = MlxFaceAnalysisModel(**kwargs) if self.enable_mlx_bootstrap else None
         self.cat_cascades = self._load_cat_cascades() if self.enable_cat_cascade else []
@@ -41,15 +43,15 @@ class MlxAnimalFaceAnalysisModel:
         x, y, w, h = [float(v) for v in bbox]
         return np.array(
             [
-                [x + 0.66 * w, y + 0.40 * h],  # right eye outer
-                [x + 0.56 * w, y + 0.40 * h],  # right eye inner
-                [x + 0.44 * w, y + 0.40 * h],  # left eye inner
-                [x + 0.34 * w, y + 0.40 * h],  # left eye outer
-                [x + 0.50 * w, y + 0.58 * h],  # nose
-                [x + 0.58 * w, y + 0.72 * h],  # mouth right
-                [x + 0.42 * w, y + 0.72 * h],  # mouth left
-                [x + 0.50 * w, y + 0.67 * h],  # upper mouth
-                [x + 0.50 * w, y + 0.78 * h],  # lower mouth
+                [x + 0.84 * w, y + 0.40 * h],  # right eye outer
+                [x + 0.64 * w, y + 0.45 * h],  # right eye inner
+                [x + 0.36 * w, y + 0.405 * h],  # left eye inner
+                [x + 0.16 * w, y + 0.382 * h],  # left eye outer
+                [x + 0.49 * w, y + 0.725 * h],  # nose
+                [x + 0.335 * w, y + 0.79 * h],  # mouth right
+                [x + 0.63 * w, y + 0.785 * h],  # mouth left
+                [x + 0.50 * w, y + 0.75 * h],  # upper mouth
+                [x + 0.50 * w, y + 0.80 * h],  # lower mouth
             ],
             dtype=np.float32,
         )
@@ -109,6 +111,11 @@ class MlxAnimalFaceAnalysisModel:
         img_bgr = data[0]
         if img_bgr is None:
             return []
+
+        if self.prefer_cat_cascade:
+            faces = self._predict_cat_cascade(img_bgr)
+            if faces:
+                return faces[: self.max_num_faces]
 
         if self.bootstrap is not None:
             faces = self.bootstrap.predict(img_bgr)

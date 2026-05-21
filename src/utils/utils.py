@@ -136,7 +136,7 @@ def calc_lip_close_ratio(lmk: np.ndarray) -> np.ndarray:
 
 
 def _keypoints_to_numpy(kp):
-    if hasattr(kp, "detach"):
+    if hasattr(kp, "detach") and hasattr(kp, "cpu"):
         return kp.detach().cpu().numpy()
     return np.asarray(kp)
 

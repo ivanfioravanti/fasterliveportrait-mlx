@@ -41,9 +41,10 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 - Removed XPose from the default animal runtime path.
 - Animal source preparation now uses `MlxAnimalFaceAnalysisModel` to define the
   source crop, then runs the MLX animal LivePortrait core models.
-- `MlxAnimalFaceAnalysisModel` tries the MLX landmark bootstrap first and falls
-  back to OpenCV's packaged cat-face cascade to emit the 9-point crop-landmark
-  contract when the MLX bootstrap cannot lock on.
+- `MlxAnimalFaceAnalysisModel` tries OpenCV's packaged cat-face cascade first
+  for cat-like sources and emits the 9-point crop-landmark contract used by the
+  animal pipeline. The MLX landmark bootstrap remains a fallback for images
+  where the cat cascade cannot lock on.
 - XPose runtime code and downloads have been removed.
 
 ## JoyVASA MLX Progress

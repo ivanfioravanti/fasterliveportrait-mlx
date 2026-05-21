@@ -14,15 +14,13 @@ import sys
 
 from huggingface_hub import snapshot_download
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-DEFAULT_MLX_REPO = "ivanfioravanti/FasterLivePortrait-MLX-weights"
-
-MLX_ALLOW_PATTERNS = (
-    "liveportrait_mlx/*.npz",
-    "liveportrait_animal_mlx/base_models_v1.1/*.npz",
-    "JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz",
-    "JoyVASA/audio_encoder/hubert_chinese_mlx.npz",
-    "JoyVASA/motion_template/motion_template.pkl",
+from src.runtime_assets import (
+    DEFAULT_MLX_WEIGHTS_REPO,
+    MLX_ALLOW_PATTERNS,
 )
 
 JOYVASA_REPO = "jdh-algo/JoyVASA"
@@ -38,15 +36,28 @@ CHINESE_HUBERT_ALLOW_PATTERNS = (
     "pytorch_model.bin",
 )
 
-def download_mlx_weights(repo_id: str, checkpoints_dir: Path, revision: str | None) -> None:
+
+def download_mlx_weights(repo_id: str, checkpoints_dir: Path | None, revision: str | None) -> Path:
+    if checkpoints_dir is None:
+        print(f"downloading MLX weights from {repo_id} into the Hugging Face Hub cache")
+        snapshot_path = snapshot_download(
+            repo_id=repo_id,
+            repo_type="model",
+            revision=revision,
+            allow_patterns=list(MLX_ALLOW_PATTERNS),
+        )
+        print(f"cached snapshot: {snapshot_path}")
+        return Path(snapshot_path)
+
     print(f"downloading MLX weights from {repo_id} -> {checkpoints_dir}")
-    snapshot_download(
+    snapshot_path = snapshot_download(
         repo_id=repo_id,
         repo_type="model",
         revision=revision,
         local_dir=checkpoints_dir,
         allow_patterns=list(MLX_ALLOW_PATTERNS),
     )
+    return Path(snapshot_path)
 
 
 def download_joyvasa(checkpoints_dir: Path) -> None:
@@ -87,9 +98,13 @@ def download_joyvasa(checkpoints_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download FasterLivePortrait-MLX runtime assets.")
-    parser.add_argument("--repo-id", default=DEFAULT_MLX_REPO, help="HF repo containing converted MLX .npz weights")
+    parser.add_argument("--repo-id", default=DEFAULT_MLX_WEIGHTS_REPO, help="HF repo containing converted MLX .npz weights")
     parser.add_argument("--revision", default=None, help="optional HF revision for the MLX weights repo")
-    parser.add_argument("--checkpoints-dir", default="checkpoints", help="local checkpoint root")
+    parser.add_argument(
+        "--checkpoints-dir",
+        default=None,
+        help="optional local checkpoint root; omit to use the normal Hugging Face Hub cache",
+    )
     parser.add_argument(
         "--skip-mlx-weights",
         action="store_true",
@@ -102,11 +117,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    checkpoints_dir = Path(args.checkpoints_dir)
+    checkpoints_dir = Path(args.checkpoints_dir).expanduser() if args.checkpoints_dir else None
     try:
         if not args.skip_mlx_weights:
             download_mlx_weights(args.repo_id, checkpoints_dir, args.revision)
         if args.include_joyvasa:
+            if checkpoints_dir is None:
+                raise ValueError("--include-joyvasa exports local files; pass --checkpoints-dir")
             download_joyvasa(checkpoints_dir)
     except Exception as exc:
         print(f"download failed: {exc}", file=sys.stderr)

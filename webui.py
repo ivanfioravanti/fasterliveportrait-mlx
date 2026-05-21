@@ -5,10 +5,12 @@ The entrance of the gradio
 """
 import gradio as gr
 import os.path as osp
+import shlex
 from omegaconf import OmegaConf
 
 from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
 from src.pipelines.mlx_audio_tts import MLX_AUDIO_KOKORO_VOICES
+from src.runtime_assets import ensure_runtime_assets
 
 
 def load_description(fp):
@@ -28,6 +30,7 @@ args, unknown = parser.parse_known_args()
 
 cfg_path = "configs/mlx_infer.yaml"
 infer_cfg = OmegaConf.load(cfg_path)
+ensure_runtime_assets(infer_cfg)
 gradio_pipeline = GradioLivePortraitPipeline(infer_cfg)
 demo_theme = gr.themes.Soft(font=[gr.themes.GoogleFont("Plus Jakarta Sans")])
 
@@ -41,6 +44,7 @@ def gpu_wrapped_execute_image(*args, **kwargs):
 
 
 def change_animal_model(is_animal):
+    ensure_runtime_assets(gradio_pipeline.cfg)
     gradio_pipeline.clean_models()
     gradio_pipeline.init_models(is_animal=is_animal)
 
@@ -57,6 +61,101 @@ def update_driving_mode(mode):
         gr.update(visible=mode == "Audio"),
         gr.update(visible=mode == "Text"),
     )
+
+
+def build_cli_command(
+        input_source_image_path=None,
+        input_source_video_path=None,
+        input_driving_video_path=None,
+        input_driving_image_path=None,
+        input_driving_pickle_path=None,
+        input_driving_audio_path=None,
+        input_driving_text=None,
+        source_mode=None,
+        driving_mode=None,
+        flag_relative_input=True,
+        flag_do_crop_input=True,
+        flag_remap_input=True,
+        driving_multiplier=1.0,
+        flag_stitching=True,
+        flag_crop_driving_video_input=True,
+        flag_video_editing_head_rotation=False,
+        flag_is_animal=False,
+        animation_region="all",
+        scale=2.3,
+        vx_ratio=0.0,
+        vy_ratio=-0.125,
+        scale_crop_driving_video=2.2,
+        vx_ratio_crop_driving_video=0.0,
+        vy_ratio_crop_driving_video=-0.1,
+        driving_smooth_observation_variance=1e-7,
+        cfg_scale=4.0,
+        voice_name=None,
+):
+    def has_value(value):
+        return value is not None and str(value) not in ("", "None")
+
+    selected_source_mode = source_mode if source_mode in ("Image", "Video") else None
+    if selected_source_mode is None:
+        selected_source_mode = "Video" if has_value(input_source_video_path) else "Image"
+    source_path = input_source_video_path if selected_source_mode == "Video" else input_source_image_path
+
+    driving_values = {
+        "Video": input_driving_video_path,
+        "Image": input_driving_image_path,
+        "Pickle": input_driving_pickle_path,
+        "Audio": input_driving_audio_path,
+        "Text": input_driving_text,
+    }
+    selected_driving_mode = driving_mode if driving_mode in driving_values else None
+    if selected_driving_mode is None:
+        for mode, value in driving_values.items():
+            if has_value(value):
+                selected_driving_mode = mode
+                break
+    driving_path = driving_values[selected_driving_mode] if selected_driving_mode else None
+
+    if selected_driving_mode not in ("Video", "Pickle"):
+        return (
+            "# CLI retry currently supports Video and Pickle driving through run.py.\n"
+            "# Select a driving video or pickle to generate a runnable command."
+        )
+
+    parts = ["uv", "run", "python", "run.py", "--cfg", cfg_path, "--mlx-profile", "quality"]
+    parts.extend(["--src_image", str(source_path) if has_value(source_path) else "<source_path>"])
+    parts.extend(["--dri_video", str(driving_path) if has_value(driving_path) else "<driving_path>"])
+    if flag_is_animal:
+        parts.append("--animal")
+    if flag_remap_input:
+        parts.append("--paste_back")
+
+    bool_flags = [
+        ("--relative-motion", flag_relative_input),
+        ("--do-crop", flag_do_crop_input),
+        ("--stitching", flag_stitching),
+        ("--crop-driving-video", flag_crop_driving_video_input),
+        ("--video-editing-head-rotation", flag_video_editing_head_rotation),
+    ]
+    for flag, enabled in bool_flags:
+        parts.append(flag if enabled else "--no-" + flag[2:])
+
+    value_flags = [
+        ("--driving-multiplier", driving_multiplier),
+        ("--animation-region", animation_region),
+        ("--src-scale", scale),
+        ("--src-vx-ratio", vx_ratio),
+        ("--src-vy-ratio", vy_ratio),
+        ("--dri-scale", scale_crop_driving_video),
+        ("--dri-vx-ratio", vx_ratio_crop_driving_video),
+        ("--dri-vy-ratio", vy_ratio_crop_driving_video),
+        ("--driving-smooth-observation-variance", driving_smooth_observation_variance),
+        ("--cfg-scale", cfg_scale),
+    ]
+    for flag, value in value_flags:
+        if value is not None:
+            parts.extend([flag, str(value)])
+
+    return " ".join(shlex.quote(part) for part in parts)
 
 
 # assets
@@ -167,6 +266,17 @@ with gr.Blocks() as demo:
                                                                 minimum=1e-11, maximum=1e-2, step=1e-8)
                 flag_is_animal = gr.Checkbox(value=False, label="is_animal")
 
+    cli_command = gr.Code(
+        label="CLI retry command",
+        language="shell",
+        lines=5,
+        max_lines=8,
+        interactive=False,
+        wrap_lines=True,
+        show_line_numbers=False,
+        buttons=["copy"],
+    )
+
     gr.Markdown(load_description("assets/gradio/gradio_description_animate_clear.md"))
     with gr.Row():
         process_button_animation = gr.Button("🚀 Animate", variant="primary")
@@ -232,6 +342,53 @@ with gr.Blocks() as demo:
             with gr.Accordion(open=True, label="Paste-back Result"):
                 output_image_paste_back.render()
 
+    cli_command_inputs = [
+        source_image_input,
+        source_video_input,
+        driving_video_input,
+        driving_image_input,
+        driving_pickle_input,
+        driving_audio_input,
+        driving_text_input,
+        source_mode,
+        driving_mode,
+        flag_relative_input,
+        flag_do_crop_input,
+        flag_remap_input,
+        driving_multiplier,
+        flag_stitching,
+        flag_crop_driving_video_input,
+        flag_video_editing_head_rotation,
+        flag_is_animal,
+        animation_region,
+        scale,
+        vx_ratio,
+        vy_ratio,
+        scale_crop_driving_video,
+        vx_ratio_crop_driving_video,
+        vy_ratio_crop_driving_video,
+        driving_smooth_observation_variance,
+        cfg_scale,
+        voice_name,
+    ]
+    demo.load(
+        build_cli_command,
+        inputs=cli_command_inputs,
+        outputs=[cli_command],
+        api_name=False,
+        queue=False,
+        show_progress="hidden",
+    )
+    for cli_input in cli_command_inputs:
+        cli_input.change(
+            build_cli_command,
+            inputs=cli_command_inputs,
+            outputs=[cli_command],
+            api_name=False,
+            queue=False,
+            show_progress="hidden",
+        )
+
     flag_is_animal.change(
         change_animal_model,
         inputs=[flag_is_animal],
@@ -270,7 +427,7 @@ with gr.Blocks() as demo:
         concurrency_id="flp_pipeline",
     )
     process_button_animation.click(
-        fn=gpu_wrapped_execute_video,
+        fn=gradio_pipeline.execute_video,
         inputs=[
             source_image_input,
             source_video_input,

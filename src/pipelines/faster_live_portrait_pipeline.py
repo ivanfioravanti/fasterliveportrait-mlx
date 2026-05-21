@@ -17,6 +17,16 @@ from ..utils.utils import resize_to_limit, prepare_paste_back, get_rotation_matr
 from src.utils import utils
 
 
+def _image_to_uint8_numpy(image):
+    if isinstance(image, np.ndarray):
+        return image if image.dtype == np.uint8 else image.astype(np.uint8)
+    if hasattr(image, "detach") and hasattr(image, "cpu"):
+        image = image.detach().cpu().numpy()
+    else:
+        image = np.asarray(image)
+    return image if image.dtype == np.uint8 else image.astype(np.uint8)
+
+
 class FasterLivePortraitPipeline:
     def __init__(self, cfg, **kwargs):
         self.cfg = cfg
@@ -519,12 +529,9 @@ class FasterLivePortraitPipeline:
             if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop and self.cfg.infer_params.flag_stitching:
                 I_p_pstbk = paste_back_numpy(out_crop, M, I_p_pstbk, mask_ori_float)
         if realtime:
-            if isinstance(out_crop, np.ndarray):
-                out_crop_np = out_crop if out_crop.dtype == np.uint8 else out_crop.astype(np.uint8)
-            else:
-                out_crop_np = np.asarray(out_crop, dtype=np.uint8)
+            out_crop_np = _image_to_uint8_numpy(out_crop)
             return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
-        out_crop_np = out_crop if isinstance(out_crop, np.ndarray) else np.asarray(out_crop, dtype=np.uint8)
+        out_crop_np = _image_to_uint8_numpy(out_crop)
         return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
 
     def run(self, image, img_src, src_info, **kwargs):

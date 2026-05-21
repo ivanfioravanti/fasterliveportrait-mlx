@@ -234,8 +234,11 @@ class MlxWarpingSpadeModel:
         return_numpy: bool = False,
         return_uint8: bool = False,
         return_mx: bool = False,
+        return_torch: bool = False,
     ):
         # data = (f_s NCDHW numpy, kp_source numpy, kp_driving numpy)
+        if return_torch:
+            raise ValueError("return_torch is not supported in the MLX-only runtime")
         if return_mx and return_numpy:
             raise ValueError("return_mx and return_numpy are mutually exclusive")
         f_s_pt, kp_s, kp_d = data

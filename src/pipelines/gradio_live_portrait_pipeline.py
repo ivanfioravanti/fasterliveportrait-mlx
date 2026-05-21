@@ -8,7 +8,6 @@ import datetime
 import os
 import time
 from tqdm import tqdm
-import subprocess
 import pickle
 import numpy as np
 from .faster_live_portrait_pipeline import FasterLivePortraitPipeline
@@ -17,6 +16,7 @@ from .mlx_audio_tts import MLX_AUDIO_KOKORO_MODEL, MLXAudioTextToSpeech
 from ..utils.utils import video_has_audio
 from ..utils.utils import resize_to_limit, prepare_paste_back, transform_keypoint
 from ..utils.crop import crop_image, paste_back_numpy
+from ..utils.ffmpeg_utils import run_ffmpeg
 from src.utils import utils
 import platform
 
@@ -53,7 +53,12 @@ def mux_audio(video_path, audio_path, output_path, duration=None, fps=None):
     if fps is not None:
         cmd.extend(["-r", str(fps)])
     cmd.append(output_path)
-    subprocess.run(cmd, check=True)
+    run_ffmpeg(cmd)
+
+
+def update_progress(progress, value, desc):
+    if progress is not None:
+        progress(value, desc=desc)
 
 
 class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
@@ -108,8 +113,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 "JoyVASA audio driving assets are not installed. Missing: "
                 + ", ".join(missing)
                 + ". Text driving uses MLX-audio for TTS, but still needs JoyVASA to convert audio into motion. "
-                + "Install the temporary experimental assets with: "
-                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights --include-joyvasa`.",
+                + "The default startup downloads these from the Hugging Face Hub cache. "
+                + "If you set FLIP_CHECKPOINT_DIR, prefetch them with: "
+                + "`uv run python scripts/download_mlx_weights.py --skip-mlx-weights "
+                + "--include-joyvasa --checkpoints-dir $FLIP_CHECKPOINT_DIR`.",
                 duration=8,
             )
 
@@ -142,6 +149,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             driving_smooth_observation_variance=1e-7,
             cfg_scale=4.0,
             voice_name='af',
+            progress=gr.Progress(track_tqdm=True),
     ):
         """ for video driven potrait animation
         """
@@ -204,25 +212,32 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             }
             # update config from user input
             update_ret = self.update_cfg(args_user)
+            update_progress(progress, None, "Preparing source")
             if selected_driving_mode == 'Video':
                 # video driven animation
                 video_path, video_path_concat, total_time = self.run_video_driving(input_driving_path,
                                                                                    input_source_path,
-                                                                                   update_ret=update_ret)
+                                                                                   update_ret=update_ret,
+                                                                                   progress=progress)
+                update_progress(progress, 1.0, "Ready")
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
                 return self._video_outputs(video_path, video_path_concat)
             elif selected_driving_mode == 'Pickle':
                 # pickle driven animation
                 video_path, video_path_concat, total_time = self.run_pickle_driving(input_driving_path,
                                                                                     input_source_path,
-                                                                                    update_ret=update_ret)
+                                                                                    update_ret=update_ret,
+                                                                                    progress=progress)
+                update_progress(progress, 1.0, "Ready")
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
                 return self._video_outputs(video_path, video_path_concat)
             elif selected_driving_mode == 'Audio':
                 # audio driven animation
                 video_path, video_path_concat, total_time = self.run_audio_driving(input_driving_path,
                                                                                    input_source_path,
-                                                                                   update_ret=update_ret)
+                                                                                   update_ret=update_ret,
+                                                                                   progress=progress)
+                update_progress(progress, 1.0, "Ready")
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
                 return self._video_outputs(video_path, video_path_concat)
             elif selected_driving_mode == 'Text':
@@ -230,7 +245,9 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 video_path, video_path_concat, total_time = self.run_text_driving(input_driving_path,
                                                                                   voice_name,
                                                                                   input_source_path,
-                                                                                  update_ret=update_ret)
+                                                                                  update_ret=update_ret,
+                                                                                  progress=progress)
+                update_progress(progress, 1.0, "Ready")
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
                 return self._video_outputs(video_path, video_path_concat)
             else:
@@ -271,8 +288,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
     def run_video_driving(self, driving_video_path, source_path, **kwargs):
         t00 = time.time()
+        progress = kwargs.get("progress")
 
         self._ensure_source_prepared(source_path, **kwargs)
+        update_progress(progress, None, "Opening driving video")
 
         vcap = cv2.VideoCapture(driving_video_path)
         if self.is_source_video:
@@ -300,6 +319,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         vout_org = cv2.VideoWriter(vsave_org_path, fourcc, fps, (w, h))
 
         infer_times = []
+        print(f"render {max_frame} frames to {vsave_crop_path} and {vsave_org_path}", flush=True)
         for i in tqdm(range(max_frame)):
             ret, frame = vcap.read()
             if not ret:
@@ -322,7 +342,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             vout_crop.write(out_crop)
             out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
             vout_org.write(out_org)
-        total_time = time.time() - t00
+            if progress is not None and (i == 0 or (i + 1) % max(1, max_frame // 100) == 0 or i + 1 == max_frame):
+                progress((i + 1, max_frame), desc=f"Rendering frames {i + 1}/{max_frame}")
+        update_progress(progress, None, "Finalizing video files")
+        print("finalizing video writers", flush=True)
         vcap.release()
         vout_crop.release()
         vout_org.release()
@@ -330,17 +353,23 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         if video_has_audio(driving_video_path):
             vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
             vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
+            update_progress(progress, None, "Muxing audio into crop video")
+            print(f"mux audio: {vsave_crop_path_new}", flush=True)
             if self.is_source_video:
                 duration, fps = utils.get_video_info(vsave_crop_path)
                 mux_audio(vsave_crop_path, driving_video_path, vsave_crop_path_new, duration=duration, fps=fps)
+                update_progress(progress, None, "Muxing audio into pasteback video")
+                print(f"mux audio: {vsave_org_path_new}", flush=True)
                 mux_audio(vsave_org_path, driving_video_path, vsave_org_path_new, duration=duration, fps=fps)
             else:
                 mux_audio(vsave_crop_path, driving_video_path, vsave_crop_path_new)
+                update_progress(progress, None, "Muxing audio into pasteback video")
+                print(f"mux audio: {vsave_org_path_new}", flush=True)
                 mux_audio(vsave_org_path, driving_video_path, vsave_org_path_new)
 
-            return vsave_org_path_new, vsave_crop_path_new, total_time
+            return vsave_org_path_new, vsave_crop_path_new, time.time() - t00
         else:
-            return vsave_org_path, vsave_crop_path, total_time
+            return vsave_org_path, vsave_crop_path, time.time() - t00
 
     def run_pickle_driving(self, driving_pickle_path, source_path, **kwargs):
         t00 = time.time()

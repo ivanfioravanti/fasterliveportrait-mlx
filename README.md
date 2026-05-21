@@ -50,7 +50,11 @@ Install ffmpeg, then create the project environment with uv:
 uv sync
 ```
 
-If this checkout does not already contain model checkpoints, download the converted MLX runtime weights from [ivanfioravanti/FasterLivePortrait-MLX-weights](https://huggingface.co/ivanfioravanti/FasterLivePortrait-MLX-weights):
+Runtime weights are resolved through the normal Hugging Face Hub cache by default.
+On startup, the Gradio, CLI, and API entrypoints call `snapshot_download` for
+[ivanfioravanti/FasterLivePortrait-MLX-weights](https://huggingface.co/ivanfioravanti/FasterLivePortrait-MLX-weights)
+and load files from the returned `$HF_HOME/hub/models--.../snapshots/...` directory.
+To prefetch the runtime assets manually:
 
 ```shell
 uv run python scripts/download_mlx_weights.py \
@@ -58,7 +62,7 @@ uv run python scripts/download_mlx_weights.py \
 ```
 
 This downloads the human MLX weights, animal LivePortrait core MLX weights, JoyVASA MLX
-audio-to-motion weights, and the JoyVASA motion template.
+audio-to-motion weights, and the JoyVASA motion template into the Hugging Face Hub cache.
 
 Gradio text driving uses [MLX-audio](https://github.com/Blaizzy/mlx-audio) with the default
 `mlx-community/Kokoro-82M-bf16` model. The model and selected voice are downloaded lazily from
@@ -78,10 +82,11 @@ MLX weights repo:
 ```shell
 uv run python scripts/download_mlx_weights.py \
   --skip-mlx-weights \
-  --include-joyvasa
+  --include-joyvasa \
+  --checkpoints-dir ./checkpoints
 ```
 
-That command writes:
+That local conversion command writes:
 
 - `checkpoints/JoyVASA/motion_generator/motion_generator_hubert_chinese_mlx.npz`
 - `checkpoints/JoyVASA/audio_encoder/hubert_chinese_mlx.npz`
@@ -160,7 +165,7 @@ Press `q` in the render window to exit.
 The MLX config follows the official LivePortrait quality defaults where they help this fork:
 
 - `MlxFaceAnalysisModel` runs the exported MLX landmark checkpoint on the full frame, then refines once on a face crop. It expects a visible human face in the source/driving frame; use Animal mode for animal inputs.
-- `MlxAnimalFaceAnalysisModel` uses the same MLX bootstrap for animal source crops and falls back to a packaged cat-face cascade that emits the 9-point crop layout used by the animal pipeline.
+- `MlxAnimalFaceAnalysisModel` prefers a packaged cat-face cascade for cat-like source crops and emits the 9-point animal crop layout used by the animal pipeline, with the MLX landmark bootstrap kept as a fallback when the cascade cannot lock on.
 - `driving_option: expression-friendly` scales motion using source/driving keypoint geometry.
 - `flag_stabilize_driving_crop: true` keeps webcam framing centered without smile-driven zoom jitter.
 - `flag_lock_driving_crop_scale: true` locks the camera crop zoom after the first detected frame.
@@ -182,7 +187,8 @@ uv run python run.py \
 
 ### MLX Profiles
 
-- `quality`: exact baseline path.
+- `quality`: highest-fidelity default MLX path.
+- `reference`: validation-oriented path with fusions, compile wrappers, and temporal reuse disabled.
 - `speed`: moderate realtime reuse.
 - `turbo`: aggressive realtime path, reusing warping for up to three frames.
 - `ultra`: highest-throughput experimental path, reusing warping for up to eight frames.
@@ -224,14 +230,14 @@ The benchmark scripts print timing in milliseconds and FPS.
 
 ### API
 
-The FastAPI entrypoint is experimental in this release. On startup it reads `configs/mlx_infer.yaml` and, when runtime assets are missing, downloads from [ivanfioravanti/FasterLivePortrait-MLX-weights](https://huggingface.co/ivanfioravanti/FasterLivePortrait-MLX-weights) by calling:
+The FastAPI entrypoint is experimental in this release. On startup it reads `configs/mlx_infer.yaml` and resolves runtime assets from [ivanfioravanti/FasterLivePortrait-MLX-weights](https://huggingface.co/ivanfioravanti/FasterLivePortrait-MLX-weights) through the Hugging Face Hub cache. To prefetch the same assets, run:
 
 ```shell
 uv run python scripts/download_mlx_weights.py \
   --repo-id ivanfioravanti/FasterLivePortrait-MLX-weights
 ```
 
-Set `FLIP_CHECKPOINT_DIR` to use a checkpoint directory outside the repo. Set `FLIP_MLX_WEIGHTS_REPO` or `FLIP_MLX_WEIGHTS_REVISION` to override the default MLX weights repo or revision.
+Set `HF_HOME` to move the Hugging Face cache. Set `FLIP_CHECKPOINT_DIR` only when you want an explicit local checkpoint tree instead of the Hub cache. Set `FLIP_MLX_WEIGHTS_REPO` or `FLIP_MLX_WEIGHTS_REVISION` to override the default MLX weights repo or revision.
 
 ### Tests
 

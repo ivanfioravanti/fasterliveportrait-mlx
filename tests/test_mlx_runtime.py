@@ -1,7 +1,9 @@
+import os
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -101,6 +103,28 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert not (ROOT / "configs" / "onnx_mp_infer.yaml").exists()
 
 
+def test_runtime_config_resolves_checkpoint_paths_to_hf_snapshots(tmp_path, monkeypatch):
+    monkeypatch.delenv("FLIP_CHECKPOINT_DIR", raising=False)
+
+    from src.runtime_assets import get_local_checkpoints_dir, resolve_runtime_config
+
+    cfg = OmegaConf.load(CFG_PATH)
+    mlx_snapshot = tmp_path / "hub" / "models--ivanfioravanti--FasterLivePortrait-MLX-weights" / "snapshots" / "abc"
+
+    assert get_local_checkpoints_dir() is None
+    resolve_runtime_config(cfg, checkpoint_root=mlx_snapshot)
+
+    assert cfg.models.motion_extractor.model_path == str(mlx_snapshot / "liveportrait_mlx" / "motion_extractor.npz")
+    assert cfg.models.face_analysis.model_path == str(mlx_snapshot / "liveportrait_mlx" / "landmark.npz")
+    assert cfg.animal_models.warping_spade.model_path[0] == str(
+        mlx_snapshot / "liveportrait_animal_mlx" / "base_models_v1.1" / "warping_module.npz"
+    )
+    assert cfg.animal_models.face_analysis.model_path == str(mlx_snapshot / "liveportrait_mlx" / "landmark.npz")
+    assert cfg.joyvasa_models.motion_template_path == str(
+        mlx_snapshot / "JoyVASA" / "motion_template" / "motion_template.pkl"
+    )
+
+
 def test_importing_mlx_runtime_does_not_import_legacy_runtime_deps():
     code = (
         "import json, sys;"
@@ -139,6 +163,7 @@ def test_mlx_face_analysis_predicts_landmarks_without_mediapipe():
 
 
 def test_mlx_animal_face_analysis_fallback_landmarks_match_crop_contract():
+    from src.utils.crop import parse_rect_from_landmark
     from src.models.mlx_animal_face_analysis_model import MlxAnimalFaceAnalysisModel
 
     landmarks = MlxAnimalFaceAnalysisModel._landmarks_from_bbox((10, 20, 100, 80))
@@ -150,6 +175,28 @@ def test_mlx_animal_face_analysis_fallback_landmarks_match_crop_contract():
     assert np.all(landmarks[:, 0] <= 110)
     assert np.all(landmarks[:, 1] >= 20)
     assert np.all(landmarks[:, 1] <= 100)
+    _, size, _ = parse_rect_from_landmark(landmarks, scale=2.3, vy_ratio=-0.125)
+    assert 150 < float(size[0]) < 170
+
+
+def test_mlx_animal_face_analysis_prefers_cat_cascade(monkeypatch):
+    from src.models.mlx_animal_face_analysis_model import MlxAnimalFaceAnalysisModel
+
+    model = MlxAnimalFaceAnalysisModel(enable_mlx_bootstrap=False, enable_cat_cascade=False)
+    dense_landmarks = np.zeros((203, 2), dtype=np.float32)
+    sparse_landmarks = np.ones((9, 2), dtype=np.float32)
+
+    class Bootstrap:
+        def predict(self, _image):
+            return [dense_landmarks]
+
+    model.bootstrap = Bootstrap()
+    monkeypatch.setattr(model, "_predict_cat_cascade", lambda _image: [sparse_landmarks])
+
+    faces = model.predict(np.zeros((32, 32, 3), dtype=np.uint8))
+
+    assert len(faces) == 1
+    assert faces[0] is sparse_landmarks
 
 
 def test_mlx_animal_face_analysis_predicts_landmarks_without_xpose():
@@ -177,6 +224,77 @@ def test_mlx_audio_kokoro_voice_language_mapping():
     assert kokoro_lang_code_for_voice("bf_alice") == "b"
     assert kokoro_lang_code_for_voice("jf_alpha") == "j"
     assert kokoro_lang_code_for_voice("zf_xiaobei") == "z"
+
+
+def test_reference_mlx_profile_disables_experimental_paths(monkeypatch):
+    from src.utils.mlx_profiles import MLX_PROFILE_CHOICES, apply_mlx_profile
+
+    assert "reference" in MLX_PROFILE_CHOICES
+    expected = {
+        "FLP_MLX_MASK_BACKEND": "native",
+        "FLP_MLX_COMPILE_HOURGLASS": "0",
+        "FLP_MLX_COMPILE_SPADE": "0",
+        "FLP_MLX_COMPILE_MOTION": "0",
+        "FLP_MLX_COMPILE_APPEARANCE": "0",
+        "FLP_MLX_FUSED_UINT8": "0",
+        "FLP_MLX_FUSED_DEFORMATION": "0",
+        "FLP_MLX_FUSED_SPARSE_SAMPLE": "0",
+        "FLP_MLX_FUSED_HOURGLASS_INPUT": "0",
+        "FLP_MLX_CONV3D_BACKEND": "native",
+        "FLP_MLX_GS3D_GATHER": "1",
+        "FLP_MLX_WARP_OUT_BACKEND": "standard",
+        "FLP_MLX_TEMPORAL_WARP_INTERVAL": "1",
+        "FLP_MLX_TEMPORAL_WARP_THRESHOLD": "0",
+    }
+    for key in expected:
+        monkeypatch.setenv(key, "sentinel")
+
+    settings = apply_mlx_profile("reference")
+
+    for key, value in expected.items():
+        assert settings[key] == value
+        assert os.environ[key] == value
+
+
+def test_run_cli_overrides_cover_web_settings():
+    from run import apply_cli_overrides
+
+    cfg = OmegaConf.load(CFG_PATH)
+    args = SimpleNamespace(
+        relative_motion=True,
+        do_crop=False,
+        stitching=False,
+        crop_driving_video=True,
+        video_editing_head_rotation=True,
+        driving_multiplier=1.25,
+        animation_region="pose",
+        driving_smooth_observation_variance=1e-6,
+        cfg_scale=3.5,
+        src_scale=2.4,
+        src_vx_ratio=0.1,
+        src_vy_ratio=-0.2,
+        dri_scale=2.6,
+        dri_vx_ratio=-0.1,
+        dri_vy_ratio=0.2,
+    )
+
+    apply_cli_overrides(cfg, args)
+
+    assert cfg.infer_params.flag_relative_motion is True
+    assert cfg.infer_params.flag_do_crop is False
+    assert cfg.infer_params.flag_stitching is False
+    assert cfg.infer_params.flag_crop_driving_video is True
+    assert cfg.infer_params.flag_video_editing_head_rotation is True
+    assert cfg.infer_params.driving_multiplier == 1.25
+    assert cfg.infer_params.animation_region == "pose"
+    assert cfg.infer_params.driving_smooth_observation_variance == 1e-6
+    assert cfg.infer_params.cfg_scale == 3.5
+    assert cfg.crop_params.src_scale == 2.4
+    assert cfg.crop_params.src_vx_ratio == 0.1
+    assert cfg.crop_params.src_vy_ratio == -0.2
+    assert cfg.crop_params.dri_scale == 2.6
+    assert cfg.crop_params.dri_vx_ratio == -0.1
+    assert cfg.crop_params.dri_vy_ratio == 0.2
 
 
 def test_numpy_paste_back_does_not_require_torchgeometry():
