@@ -126,6 +126,7 @@ infer_params:
   flag_pasteback: True
   flag_do_crop: True
   flag_do_rot: True
+  flag_multi_face_source: False
   flag_auto_crop_driving_video: False
   flag_stabilize_driving_crop: True
   flag_lock_driving_crop_scale: True

@@ -57,6 +57,13 @@ def _compose_face_preview(face_crops, dsize=512):
     return canvas
 
 
+def _select_source_faces(src_faces, *, allow_multi_face_source=False, realtime=False):
+    faces = list(src_faces)
+    if realtime or not allow_multi_face_source:
+        return faces[:1]
+    return faces
+
+
 def _copy_array_dict(values, dtype=None):
     copied = {}
     for key, value in values.items():
@@ -227,6 +234,7 @@ class FasterLivePortraitPipeline:
             self.src_imgs = []
             self.src_infos = []
             self.source_path = source_path
+            allow_multi_face_source = bool(self.cfg.infer_params.get("flag_multi_face_source", False))
 
             for ii, img_bgr in tqdm(enumerate(src_imgs_bgr), total=len(src_imgs_bgr)):
                 img_bgr = resize_to_limit(img_bgr, self.cfg.infer_params.source_max_dim,
@@ -252,9 +260,12 @@ class FasterLivePortraitPipeline:
                         print("No human face detected in this image.")
                         continue
                     self.src_imgs.append(img_rgb)
-                    # 如果是实时，只关注最大的那张脸
-                    if kwargs.get("realtime", False):
-                        src_faces = src_faces[:1]
+
+                src_faces = _select_source_faces(
+                    src_faces,
+                    allow_multi_face_source=allow_multi_face_source,
+                    realtime=kwargs.get("realtime", False),
+                )
 
                 crop_infos = []
                 for i in range(len(src_faces)):
@@ -268,6 +279,8 @@ class FasterLivePortraitPipeline:
                         scale=self.cfg.crop_params.src_scale,
                         vx_ratio=self.cfg.crop_params.src_vx_ratio,
                         vy_ratio=self.cfg.crop_params.src_vy_ratio,
+                        flag_do_rot=bool(self.cfg.infer_params.get("flag_do_rot", True)),
+                        borderMode=cv2.BORDER_REPLICATE,
                     )
                     if self.is_animal:
                         ret_dct["lmk_crop"] = lmk

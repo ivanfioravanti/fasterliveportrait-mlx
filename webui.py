@@ -24,7 +24,25 @@ gradio_flagging.Lock = threading.Lock
 
 def patch_gradio_static_file_resolution():
     import gradio.utils as gradio_utils
+    import gradio.processing_utils as gradio_processing_utils
     from gradio.data_classes import FileData, _StaticFiles
+
+    def safe_is_in_or_equal(path_1, path_2):
+        # Gradio's original calls Path(...).resolve() which dispatches to
+        # os.path.realpath. Under Python 3.13 + concurrent Gradio worker
+        # threads (file upload + webcam streaming overlap), realpath
+        # segfaults the process. abspath + commonpath gives the same answer
+        # for any non-symlinked path this app produces, without touching
+        # the unsafe realpath code path.
+        try:
+            p1 = os.path.abspath(os.fspath(path_1))
+            p2 = os.path.abspath(os.fspath(path_2))
+        except (TypeError, ValueError, OSError):
+            return False
+        try:
+            return os.path.commonpath([p1, p2]) == p2
+        except (OSError, ValueError):
+            return False
 
     def safe_is_static_file(file_path):
         if isinstance(file_path, FileData):
@@ -46,10 +64,30 @@ def patch_gradio_static_file_resolution():
             return False
         return False
 
+    gradio_utils.is_in_or_equal = safe_is_in_or_equal
+    gradio_processing_utils.is_in_or_equal = safe_is_in_or_equal
     gradio_utils.is_static_file = safe_is_static_file
 
 
 patch_gradio_static_file_resolution()
+
+
+def patch_gradio_queue_analytics():
+    # Gradio's Queue.compute_analytics_summary builds a pandas DataFrame
+    # from event_analytics on every queued event, executed in an anyio
+    # worker thread. Under Python 3.13, pandas' C extensions segfault
+    # when invoked concurrently from that thread pool. This summary is
+    # purely internal observability for the queue and is not surfaced to
+    # the UI, so we short-circuit it to the empty cached value.
+    import gradio.queueing as gradio_queueing
+
+    def safe_compute_analytics_summary(self, event_analytics):
+        return self.cached_event_analytics_summary
+
+    gradio_queueing.Queue.compute_analytics_summary = safe_compute_analytics_summary
+
+
+patch_gradio_queue_analytics()
 
 
 def enable_fault_handler():
@@ -366,7 +404,7 @@ app_css = """
 """
 
 
-with gr.Blocks() as demo:
+with gr.Blocks(delete_cache=(300, 600)) as demo:
     gr.HTML(load_description(title_md))
 
     gr.Markdown(load_description("assets/gradio/gradio_description_upload.md"))
@@ -461,7 +499,7 @@ with gr.Blocks() as demo:
     with gr.Row():
         with gr.Accordion(open=True, label="Animation Options"):
             with gr.Row():
-                flag_relative_input = gr.Checkbox(value=False, label="relative motion")
+                flag_relative_input = gr.Checkbox(value=True, label="relative motion")
                 flag_stitching = gr.Checkbox(value=True, label="stitching")
                 driving_multiplier = gr.Number(value=1.0, label="driving multiplier", minimum=0.0, maximum=2.0,
                                                step=0.02)
@@ -684,7 +722,7 @@ with gr.Blocks() as demo:
         outputs=[output_realtime_i2i],
         show_progress="hidden",
         trigger_mode="multiple",
-        stream_every=0.1,
+        stream_every=0.2,
         concurrency_limit=1,
         concurrency_id="flp_pipeline",
     )
@@ -744,7 +782,7 @@ if __name__ == '__main__':
         share=False,
         server_name=args.host_ip,
         show_error=True,
-        max_threads=8,
+        max_threads=1,
         theme=demo_theme,
         js=js_func,
         css=app_css,

@@ -94,6 +94,12 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         mlx_profile = mlx_profile or "quality"
         if mlx_profile not in MLX_PROFILE_CHOICES:
             mlx_profile = "quality"
+        # Idempotent on the hot path: realtime webcam calls this per frame.
+        # apply_mlx_profile() writes os.environ, and macOS setenv() is not
+        # thread-safe — racing with getenv() in gradio's upload-handler
+        # thread corrupts the environ array and segfaults the process.
+        if mlx_profile == self.mlx_profile and getattr(self, "model_dict", None):
+            return None
         settings = apply_mlx_profile(mlx_profile)
         self.mlx_profile = mlx_profile
 
@@ -816,6 +822,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                     scale=self.cfg.crop_params.src_scale,
                     vx_ratio=self.cfg.crop_params.src_vx_ratio,
                     vy_ratio=self.cfg.crop_params.src_vy_ratio,
+                    flag_do_rot=bool(self.cfg.infer_params.get("flag_do_rot", True)),
+                    borderMode=cv2.BORDER_REPLICATE,
                 )
 
                 if self.is_animal:

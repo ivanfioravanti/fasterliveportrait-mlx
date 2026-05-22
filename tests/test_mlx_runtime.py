@@ -153,6 +153,38 @@ def test_multiface_crop_preview_keeps_fixed_writer_frame():
     assert int(preview[320, 64, 0]) == 220
 
 
+def test_source_face_selection_defaults_to_single_face():
+    from src.pipelines.faster_live_portrait_pipeline import _select_source_faces
+
+    faces = [object(), object(), object()]
+
+    assert _select_source_faces(faces) == faces[:1]
+    assert _select_source_faces(faces, allow_multi_face_source=True) == faces
+    assert _select_source_faces(faces, allow_multi_face_source=True, realtime=True) == faces[:1]
+
+
+def test_crop_image_can_replicate_border_pixels():
+    from src.utils.crop import crop_image
+
+    image = np.full((32, 32, 3), 255, dtype=np.uint8)
+    lmk = np.array(
+        [
+            [0.0, 0.0],
+            [8.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 8.0],
+            [8.0, 8.0],
+        ],
+        dtype=np.float32,
+    )
+
+    default_crop = crop_image(image, lmk, dsize=32, scale=4.0)["img_crop"]
+    replicated_crop = crop_image(image, lmk, dsize=32, scale=4.0, borderMode=cv2.BORDER_REPLICATE)["img_crop"]
+
+    assert int(default_crop[0, 0, 0]) == 0
+    assert int(replicated_crop[0, 0, 0]) == 255
+
+
 def test_runtime_config_resolves_checkpoint_paths_to_hf_snapshots(tmp_path, monkeypatch):
     monkeypatch.delenv("FLIP_CHECKPOINT_DIR", raising=False)
 

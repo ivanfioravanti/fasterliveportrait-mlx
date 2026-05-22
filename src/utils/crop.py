@@ -408,7 +408,7 @@ def crop_image(img, pts: np.ndarray, **kwargs):
         flag_do_rot=kwargs.get('flag_do_rot', True),
     )
 
-    img_crop = _transform_img(img, M_INV, dsize)  # origin to crop
+    img_crop = _transform_img(img, M_INV, dsize, borderMode=kwargs.get('borderMode', None))  # origin to crop
     pt_crop = _transform_pts(pts, M_INV)
 
     M_o2c = np.vstack([M_INV, np.array([0, 0, 1], dtype=DTYPE)])
