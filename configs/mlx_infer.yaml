@@ -21,6 +21,9 @@ models:
     predict_type: "mlx"
     dtype: "fp32"
     model_path: "./checkpoints/liveportrait_mlx/landmark.npz"
+    max_num_faces: 3
+    max_detection_candidates: 12
+    nms_iou_threshold: 0.35
     refine_iters: 1
   app_feat_extractor:
     name: "MlxAppearanceFeatureExtractorModel"

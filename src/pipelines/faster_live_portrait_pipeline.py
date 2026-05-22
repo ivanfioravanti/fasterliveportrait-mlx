@@ -30,6 +30,45 @@ def _image_to_uint8_numpy(image):
     return image if image.dtype == np.uint8 else image.astype(np.uint8)
 
 
+def _compose_face_preview(face_crops, dsize=512):
+    crops = [_image_to_uint8_numpy(crop) for crop in face_crops if crop is not None]
+    if not crops:
+        return None
+    if len(crops) == 1:
+        crop = crops[0]
+        if crop.shape[:2] == (dsize, dsize):
+            return crop
+        interpolation = cv2.INTER_AREA if max(crop.shape[:2]) > dsize else cv2.INTER_LINEAR
+        return cv2.resize(crop, (dsize, dsize), interpolation=interpolation)
+
+    cols = 2 if len(crops) <= 4 else 3
+    rows = int(np.ceil(len(crops) / cols))
+    canvas = np.zeros((dsize, dsize, 3), dtype=np.uint8)
+    for idx, crop in enumerate(crops):
+        row, col = divmod(idx, cols)
+        x0 = col * dsize // cols
+        x1 = (col + 1) * dsize // cols
+        y0 = row * dsize // rows
+        y1 = (row + 1) * dsize // rows
+        cell_w = x1 - x0
+        cell_h = y1 - y0
+        interpolation = cv2.INTER_AREA if crop.shape[0] > cell_h or crop.shape[1] > cell_w else cv2.INTER_LINEAR
+        canvas[y0:y1, x0:x1] = cv2.resize(crop, (cell_w, cell_h), interpolation=interpolation)
+    return canvas
+
+
+def _copy_array_dict(values, dtype=None):
+    copied = {}
+    for key, value in values.items():
+        if isinstance(value, np.ndarray):
+            copied[key] = value.astype(dtype, copy=True) if dtype is not None else value.copy()
+        elif hasattr(value, "copy"):
+            copied[key] = value.copy()
+        else:
+            copied[key] = copy.deepcopy(value)
+    return copied
+
+
 class FasterLivePortraitPipeline:
     def __init__(self, cfg, **kwargs):
         self.cfg = cfg
@@ -219,7 +258,7 @@ class FasterLivePortraitPipeline:
 
                 crop_infos = []
                 for i in range(len(src_faces)):
-                    # NOTE: temporarily only pick the first face, to support multiple face in the future
+                    # Each detected face gets an independent source crop and motion cache.
                     lmk = src_faces[i]
                     # crop the face
                     ret_dct = crop_image(
@@ -258,7 +297,7 @@ class FasterLivePortraitPipeline:
                         "scale": scale,
                         "kp": kp
                     }
-                    src_infos[i].append(copy.deepcopy(x_s_info))
+                    src_infos[i].append(_copy_array_dict(x_s_info))
                     x_c_s = kp
                     R_s = get_rotation_matrix(pitch, yaw, roll)
                     f_s = self.model_dict["app_feat_extractor"].predict(img_crop_256x256)
@@ -364,6 +403,7 @@ class FasterLivePortraitPipeline:
     def _run(self, src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio, input_lip_ratio,
              I_p_pstbk, **kwargs):
         out_crop = None
+        face_crops = []
         eye_delta_before_animation = None
         for j in range(len(src_info)):
             if self.is_source_video:
@@ -558,10 +598,11 @@ class FasterLivePortraitPipeline:
                 out_crop = warping_spade.predict(f_s, x_s, x_d_i_new)
             if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                 I_p_pstbk = paste_back_numpy(out_crop, M, I_p_pstbk, mask_ori_float)
+            face_crops.append(out_crop)
         if realtime:
-            out_crop_np = _image_to_uint8_numpy(out_crop)
+            out_crop_np = _compose_face_preview(face_crops)
             return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
-        out_crop_np = _image_to_uint8_numpy(out_crop)
+        out_crop_np = _compose_face_preview(face_crops)
         return out_crop_np, np.asarray(I_p_pstbk, dtype=np.uint8)
 
     def run(self, image, img_src, src_info, **kwargs):
@@ -570,6 +611,7 @@ class FasterLivePortraitPipeline:
         realtime = kwargs.pop("realtime", False)
         if kwargs.get("first_frame", False):
             self.driving_crop_state = None
+            self.src_lmk_pre = None
         I_p_pstbk = img_src.copy()
         if self.cfg.infer_params.flag_crop_driving_video:
             if self.src_lmk_pre is None:
@@ -635,15 +677,16 @@ class FasterLivePortraitPipeline:
         }
         R_d_i = get_rotation_matrix(pitch, yaw, roll)
         x_d_i_info["R"] = R_d_i
-        x_d_i_info_copy = copy.deepcopy(x_d_i_info)
-        for key in x_d_i_info_copy:
-            x_d_i_info_copy[key] = x_d_i_info_copy[key].astype(np.float32)
-        dri_motion_info = [x_d_i_info_copy, copy.deepcopy(input_eye_ratio.astype(np.float32)),
-                           copy.deepcopy(input_lip_ratio.astype(np.float32))]
+        x_d_i_info_copy = _copy_array_dict(x_d_i_info, dtype=np.float32)
+        dri_motion_info = [
+            x_d_i_info_copy,
+            input_eye_ratio.astype(np.float32, copy=True),
+            input_lip_ratio.astype(np.float32, copy=True),
+        ]
         if kwargs.get("first_frame", False) or self.R_d_0 is None:
             self.frame_id = 0
             self.R_d_0 = R_d_i.copy()
-            self.x_d_0_info = copy.deepcopy(x_d_i_info)
+            self.x_d_0_info = _copy_array_dict(x_d_i_info)
             warping_spade = self.model_dict.get("warping_spade")
             if hasattr(warping_spade, "reset_temporal_cache"):
                 warping_spade.reset_temporal_cache()
@@ -652,7 +695,7 @@ class FasterLivePortraitPipeline:
             self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
             self.exp_smooth = utils.OneEuroFilter(4, 0.3)
         R_d_0 = self.R_d_0.copy()
-        x_d_0_info = copy.deepcopy(self.x_d_0_info)
+        x_d_0_info = _copy_array_dict(self.x_d_0_info)
         out_crop, I_p_pstbk = self._run(src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio,
                                         input_lip_ratio,
                                         I_p_pstbk, **kwargs)
@@ -670,7 +713,7 @@ class FasterLivePortraitPipeline:
         if kwargs.get("first_frame", False) or self.R_d_0 is None:
             self.frame_id = 0
             self.R_d_0 = R_d_i.copy()
-            self.x_d_0_info = copy.deepcopy(x_d_i_info)
+            self.x_d_0_info = _copy_array_dict(x_d_i_info)
             warping_spade = self.model_dict.get("warping_spade")
             if hasattr(warping_spade, "reset_temporal_cache"):
                 warping_spade.reset_temporal_cache()
@@ -679,7 +722,7 @@ class FasterLivePortraitPipeline:
             self.R_d_smooth = utils.OneEuroFilter(4, 0.3)
             self.exp_smooth = utils.OneEuroFilter(4, 0.3)
         R_d_0 = self.R_d_0.copy()
-        x_d_0_info = copy.deepcopy(self.x_d_0_info)
+        x_d_0_info = _copy_array_dict(self.x_d_0_info)
         out_crop, I_p_pstbk = self._run(src_info, x_d_i_info, x_d_0_info, R_d_i, R_d_0, realtime, input_eye_ratio,
                                         input_lip_ratio, I_p_pstbk, **kwargs)
         return out_crop, I_p_pstbk

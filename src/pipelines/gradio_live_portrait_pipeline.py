@@ -19,6 +19,7 @@ from ..utils.crop import crop_image, paste_back_numpy, _transform_pts
 from ..utils.ffmpeg_utils import run_ffmpeg
 from ..utils.tqdm_utils import configure_tqdm_single_process
 from src.utils import utils
+from src.utils.mlx_profiles import MLX_PROFILE_CHOICES, apply_mlx_profile
 import platform
 
 configure_tqdm_single_process()
@@ -61,7 +62,16 @@ def mux_audio(video_path, audio_path, output_path, duration=None, fps=None):
 
 def update_progress(progress, value, desc):
     if progress is not None:
+        if value is None:
+            value = 0
         progress(value, desc=desc)
+
+
+def update_frame_progress(progress, frame_index, total_frames, desc_prefix):
+    if progress is None or total_frames <= 0:
+        return
+    if frame_index == 0 or (frame_index + 1) % max(1, total_frames // 100) == 0 or frame_index + 1 == total_frames:
+        progress((frame_index + 1, total_frames), desc=f"{desc_prefix} {frame_index + 1}/{total_frames}")
 
 
 class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
@@ -73,6 +83,35 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         super(GradioLivePortraitPipeline, self).__init__(cfg, **kwargs)
         self.joyvasa_pipe = None
         self.text_to_speech = None
+        self._realtime_settings_key = None
+        self._realtime_frame_index = 0
+        self._realtime_last_warning = 0.0
+        self._realtime_prepare_retry_key = None
+        self._realtime_last_prepare_attempt = 0.0
+        self.mlx_profile = "quality"
+
+    def set_mlx_profile(self, mlx_profile: str | None):
+        mlx_profile = mlx_profile or "quality"
+        if mlx_profile not in MLX_PROFILE_CHOICES:
+            mlx_profile = "quality"
+        settings = apply_mlx_profile(mlx_profile)
+        self.mlx_profile = mlx_profile
+
+        warping_spade = self.model_dict.get("warping_spade") if hasattr(self, "model_dict") else None
+        if warping_spade is not None:
+            interval = int(settings.get("FLP_MLX_TEMPORAL_WARP_INTERVAL",
+                                        os.environ.get("FLP_MLX_TEMPORAL_WARP_INTERVAL", "1")))
+            threshold = float(settings.get("FLP_MLX_TEMPORAL_WARP_THRESHOLD",
+                                           os.environ.get("FLP_MLX_TEMPORAL_WARP_THRESHOLD", "0")))
+            if hasattr(warping_spade, "_temporal_warp_interval"):
+                warping_spade._temporal_warp_interval = max(1, interval)
+            if hasattr(warping_spade, "_temporal_warp_threshold"):
+                warping_spade._temporal_warp_threshold = threshold
+            if hasattr(warping_spade, "_fused_uint8"):
+                warping_spade._fused_uint8 = os.environ.get("FLP_MLX_FUSED_UINT8", "1") == "1"
+            if hasattr(warping_spade, "reset_temporal_cache"):
+                warping_spade.reset_temporal_cache()
+        return settings
 
     @classmethod
     def _calibrate_animal_retarget_ratios(cls, input_eye_ratio: float, input_lip_ratio: float) -> tuple[float, float]:
@@ -92,7 +131,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             return
 
         self.init_vars(**kwargs)
-        ret = self.prepare_source(source_path)
+        ret = self.prepare_source(source_path, **kwargs)
         if not ret or not self.src_imgs or not self.src_infos:
             reason = getattr(self, "prepare_source_error", None) or "Error in processing source."
             raise gr.Error(f"{reason} Source: {source_path}", duration=5)
@@ -108,6 +147,12 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
     @staticmethod
     def _image_outputs(image_path, image_path_concat):
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        image_concat = cv2.imread(image_path_concat, cv2.IMREAD_COLOR)
+        if image is not None:
+            image_path = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        if image_concat is not None:
+            image_path_concat = cv2.cvtColor(image_concat, cv2.COLOR_BGR2RGB)
         return (
             gr.update(visible=False, value=None),
             gr.update(visible=False, value=None),
@@ -133,6 +178,157 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 + "--include-joyvasa --checkpoints-dir $FLIP_CHECKPOINT_DIR`.",
                 duration=8,
             )
+
+    @staticmethod
+    def _has_value(value):
+        return value is not None and str(value) not in ("", "None")
+
+    @classmethod
+    def _select_source_path(cls, input_source_image_path, input_source_video_path, source_mode):
+        selected_source_mode = source_mode if source_mode in ("Image", "Video") else None
+        if selected_source_mode is None:
+            selected_source_mode = "Video" if cls._has_value(input_source_video_path) else "Image"
+        return input_source_video_path if selected_source_mode == "Video" else input_source_image_path
+
+    @staticmethod
+    def _realtime_key(source_path, flag_is_animal, args_user, mlx_profile):
+        return (
+            str(source_path),
+            bool(flag_is_animal),
+            str(mlx_profile or "quality"),
+            tuple((key, str(args_user[key])) for key in sorted(args_user)),
+        )
+
+    def execute_realtime_frame(
+            self,
+            webcam_frame=None,
+            input_source_image_path=None,
+            input_source_video_path=None,
+            source_mode=None,
+            driving_mode=None,
+            flag_relative_input=True,
+            flag_do_crop_input=True,
+            flag_remap_input=True,
+            driving_multiplier=1.0,
+            flag_stitching=True,
+            flag_crop_driving_video_input=True,
+            flag_video_editing_head_rotation=False,
+            flag_is_animal=False,
+            animation_region="all",
+            scale=2.3,
+            vx_ratio=0.0,
+            vy_ratio=-0.125,
+            scale_crop_driving_video=2.2,
+            vx_ratio_crop_driving_video=0.0,
+            vy_ratio_crop_driving_video=-0.1,
+            driving_smooth_observation_variance=1e-7,
+            cfg_scale=4.0,
+            mlx_profile="quality",
+    ):
+        if webcam_frame is None:
+            return None
+        if driving_mode is not None and driving_mode != "Webcam":
+            return gr.update()
+
+        input_source_path = self._select_source_path(
+            input_source_image_path,
+            input_source_video_path,
+            source_mode,
+        )
+        if not self._has_value(input_source_path):
+            now = time.time()
+            if now - self._realtime_last_warning > 3.0:
+                gr.Warning("Waiting for the source image/video to finish loading.", duration=2)
+                self._realtime_last_warning = now
+            return gr.update()
+
+        args_user = {
+            'source': input_source_path,
+            'driving': '0',
+            'flag_relative_motion': flag_relative_input,
+            'flag_do_crop': flag_do_crop_input,
+            'flag_pasteback': flag_remap_input,
+            'driving_multiplier': driving_multiplier,
+            'flag_stitching': flag_stitching,
+            'flag_crop_driving_video': flag_crop_driving_video_input,
+            'flag_video_editing_head_rotation': flag_video_editing_head_rotation,
+            'src_scale': scale,
+            'src_vx_ratio': vx_ratio,
+            'src_vy_ratio': vy_ratio,
+            'dri_scale': scale_crop_driving_video,
+            'dri_vx_ratio': vx_ratio_crop_driving_video,
+            'dri_vy_ratio': vy_ratio_crop_driving_video,
+            'driving_smooth_observation_variance': driving_smooth_observation_variance,
+            'animation_region': animation_region,
+            'cfg_scale': cfg_scale,
+        }
+        self.set_mlx_profile(mlx_profile)
+        settings_key = self._realtime_key(input_source_path, flag_is_animal, args_user, mlx_profile)
+        settings_changed = settings_key != self._realtime_settings_key
+
+        if flag_is_animal != self.is_animal:
+            self.init_models(is_animal=flag_is_animal)
+            settings_changed = True
+
+        update_ret = False
+        if settings_changed:
+            update_ret = self.update_cfg(args_user)
+            self._realtime_frame_index = 0
+
+        now = time.time()
+        if (
+                self._realtime_prepare_retry_key == settings_key
+                and now - self._realtime_last_prepare_attempt < 0.75
+        ):
+            return gr.update()
+
+        try:
+            self._realtime_last_prepare_attempt = now
+            self._ensure_source_prepared(
+                str(input_source_path),
+                update_ret=update_ret or settings_changed,
+                realtime=True,
+            )
+        except gr.Error as exc:
+            now = time.time()
+            self._realtime_prepare_retry_key = settings_key
+            if now - self._realtime_last_warning > 3.0:
+                gr.Warning(str(exc), duration=2)
+                self._realtime_last_warning = now
+            return gr.update()
+
+        self._realtime_prepare_retry_key = None
+        if settings_changed:
+            self._realtime_settings_key = settings_key
+
+        frame_rgb = np.asarray(webcam_frame)
+        if frame_rgb.ndim != 3 or frame_rgb.shape[2] < 3:
+            return None
+        if frame_rgb.dtype != np.uint8:
+            frame_rgb = np.clip(frame_rgb, 0, 255).astype(np.uint8)
+        if frame_rgb.shape[2] > 3:
+            frame_rgb = frame_rgb[:, :, :3]
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+        first_frame = self._realtime_frame_index == 0
+        source_index = min(self._realtime_frame_index, len(self.src_imgs) - 1) if self.is_source_video else 0
+        out_crop = self.run(
+            frame_bgr,
+            self.src_imgs[source_index],
+            self.src_infos[source_index],
+            first_frame=first_frame,
+            realtime=True,
+        )[1]
+        self._realtime_frame_index += 1
+
+        if out_crop is None:
+            now = time.time()
+            if now - self._realtime_last_warning > 3.0:
+                gr.Warning("No face detected in the webcam frame.", duration=2)
+                self._realtime_last_warning = now
+            return None
+
+        return gr.update(visible=True, value=out_crop)
 
     def execute_video(
             self,
@@ -163,17 +359,13 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             driving_smooth_observation_variance=1e-7,
             cfg_scale=4.0,
             voice_name='af',
-            progress=gr.Progress(track_tqdm=True),
+            mlx_profile="quality",
+            progress=gr.Progress(),
     ):
         """ for video driven potrait animation
         """
-        def has_value(value):
-            return value is not None and str(value) not in ("", "None")
-
-        selected_source_mode = source_mode if source_mode in ("Image", "Video") else None
-        if selected_source_mode is None:
-            selected_source_mode = "Video" if has_value(input_source_video_path) else "Image"
-        input_source_path = input_source_video_path if selected_source_mode == "Video" else input_source_image_path
+        input_source_path = self._select_source_path(input_source_image_path, input_source_video_path, source_mode)
+        self.set_mlx_profile(mlx_profile)
 
         driving_values = {
             "Video": input_driving_video_path,
@@ -181,6 +373,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             "Pickle": input_driving_pickle_path,
             "Audio": input_driving_audio_path,
             "Text": input_driving_text,
+            "Webcam": "0",
         }
         selected_driving_mode = driving_mode if driving_mode in driving_values else None
         if selected_driving_mode is None:
@@ -190,14 +383,19 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 ("Pickle", input_driving_pickle_path),
                 ("Audio", input_driving_audio_path),
             ):
-                if has_value(value):
+                if self._has_value(value):
                     selected_driving_mode = mode
                     break
-            if selected_driving_mode is None and has_value(input_driving_text):
+            if selected_driving_mode is None and self._has_value(input_driving_text):
                 selected_driving_mode = "Text"
 
         input_driving_path = driving_values[selected_driving_mode] if selected_driving_mode else None
-        if selected_driving_mode != "Text" and has_value(input_driving_path):
+        if selected_driving_mode == "Webcam":
+            raise gr.Error(
+                "Webcam driving streams live from the webcam panel. Use the browser camera controls instead of Generate.",
+                duration=5,
+            )
+        if selected_driving_mode != "Text" and self._has_value(input_driving_path):
             input_driving_path = str(input_driving_path)
 
         if flag_is_animal != self.is_animal:
@@ -268,14 +466,19 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 # video driven animation
                 image_path, image_path_concat, total_time = self.run_image_driving(input_driving_path,
                                                                                    input_source_path,
-                                                                                   update_ret=update_ret)
+                                                                                   update_ret=update_ret,
+                                                                                   progress=progress)
+                update_progress(progress, 1.0, "Ready")
                 gr.Info(f"Run successfully! Cost: {total_time} seconds!", duration=3)
                 return self._image_outputs(image_path, image_path_concat)
         else:
             raise gr.Error("The input source portrait or driving video hasn't been prepared yet 💥!", duration=5)
 
     def run_image_driving(self, driving_image_path, source_path, **kwargs):
+        progress = kwargs.get("progress")
+        update_progress(progress, 0, "Preparing source")
         self._ensure_source_prepared(source_path, **kwargs)
+        update_progress(progress, 0.25, "Reading driving image")
 
         driving_image = cv2.imread(driving_image_path)
         save_dir = f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
@@ -287,9 +490,11 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                                       f"{os.path.basename(source_path)}-{os.path.basename(driving_image_path)}-org.jpg")
 
         t0 = time.time()
+        update_progress(progress, 0.5, "Rendering image")
         dri_crop, out_crop, out_org = self.run(driving_image, self.src_imgs[0], self.src_infos[0],
                                                first_frame=True)[:3]
 
+        update_progress(progress, 0.8, "Writing image results")
         dri_crop = cv2.resize(dri_crop, (512, 512))
         out_crop = np.concatenate([dri_crop, out_crop], axis=1)
         out_crop = cv2.cvtColor(out_crop, cv2.COLOR_RGB2BGR)
@@ -304,8 +509,9 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         t00 = time.time()
         progress = kwargs.get("progress")
 
+        update_progress(progress, 0, "Preparing source")
         self._ensure_source_prepared(source_path, **kwargs)
-        update_progress(progress, None, "Opening driving video")
+        update_progress(progress, 0, "Opening driving video")
 
         vcap = cv2.VideoCapture(driving_video_path)
         if self.is_source_video:
@@ -334,7 +540,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
         infer_times = []
         print(f"render {max_frame} frames to {vsave_crop_path} and {vsave_org_path}", flush=True)
-        for i in tqdm(range(max_frame)):
+        for i in tqdm(range(max_frame), desc="Rendering frames", unit="frame"):
             ret, frame = vcap.read()
             if not ret:
                 break
@@ -356,9 +562,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             vout_crop.write(out_crop)
             out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
             vout_org.write(out_org)
-            if progress is not None and (i == 0 or (i + 1) % max(1, max_frame // 100) == 0 or i + 1 == max_frame):
-                progress((i + 1, max_frame), desc=f"Rendering frames {i + 1}/{max_frame}")
-        update_progress(progress, None, "Finalizing video files")
+            update_frame_progress(progress, i, max_frame, "Rendering frames")
+        update_progress(progress, 0.98, "Finalizing video files")
         print("finalizing video writers", flush=True)
         vcap.release()
         vout_crop.release()
@@ -367,17 +572,17 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         if video_has_audio(driving_video_path):
             vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
             vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
-            update_progress(progress, None, "Muxing audio into crop video")
+            update_progress(progress, 0.98, "Muxing audio into crop video")
             print(f"mux audio: {vsave_crop_path_new}", flush=True)
             if self.is_source_video:
                 duration, fps = utils.get_video_info(vsave_crop_path)
                 mux_audio(vsave_crop_path, driving_video_path, vsave_crop_path_new, duration=duration, fps=fps)
-                update_progress(progress, None, "Muxing audio into pasteback video")
+                update_progress(progress, 0.99, "Muxing audio into pasteback video")
                 print(f"mux audio: {vsave_org_path_new}", flush=True)
                 mux_audio(vsave_org_path, driving_video_path, vsave_org_path_new, duration=duration, fps=fps)
             else:
                 mux_audio(vsave_crop_path, driving_video_path, vsave_crop_path_new)
-                update_progress(progress, None, "Muxing audio into pasteback video")
+                update_progress(progress, 0.99, "Muxing audio into pasteback video")
                 print(f"mux audio: {vsave_org_path_new}", flush=True)
                 mux_audio(vsave_org_path, driving_video_path, vsave_org_path_new)
 
@@ -387,8 +592,11 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
     def run_pickle_driving(self, driving_pickle_path, source_path, **kwargs):
         t00 = time.time()
+        progress = kwargs.get("progress")
 
+        update_progress(progress, 0, "Preparing source")
         self._ensure_source_prepared(source_path, **kwargs)
+        update_progress(progress, 0, "Loading driving motion")
 
         with open(driving_pickle_path, "rb") as fin:
             dri_motion_infos = pickle.load(fin)
@@ -424,7 +632,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         vout_org = cv2.VideoWriter(vsave_org_path, fourcc, fps, (w, h))
 
         infer_times = []
-        for frame_ind in tqdm(range(max_frame)):
+        print(f"render {max_frame} pickle frames to {vsave_crop_path} and {vsave_org_path}", flush=True)
+        for frame_ind in tqdm(range(max_frame), desc="Rendering pickle frames", unit="frame"):
             t0 = time.time()
             first_frame = frame_ind == 0
             dri_motion_info_ = [motion_lst[frame_ind]]
@@ -451,6 +660,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             vout_crop.write(out_crop)
             out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
             vout_org.write(out_org)
+            update_frame_progress(progress, frame_ind, max_frame, "Rendering pickle frames")
+        update_progress(progress, 0.98, "Finalizing video files")
         total_time = time.time() - t00
         vout_crop.release()
         vout_org.release()
@@ -459,7 +670,9 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
     def run_audio_driving(self, driving_audio_path, source_path, **kwargs):
         t00 = time.time()
+        progress = kwargs.get("progress")
 
+        update_progress(progress, 0, "Preparing source")
         self._ensure_source_prepared(source_path, **kwargs)
         save_dir = kwargs.get("save_dir", f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")
         os.makedirs(save_dir, exist_ok=True)
@@ -473,6 +686,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                                                             cfg_scale=self.cfg.infer_params.cfg_scale
                                                             )
         t01 = time.time()
+        update_progress(progress, 0, "Generating audio motion")
         dri_motion_infos = self.joyvasa_pipe.gen_motion_sequence(driving_audio_path)
         gr.Info(f"JoyVASA cost time:{time.time() - t01}", duration=2)
         motion_pickle_path = os.path.join(save_dir,
@@ -481,18 +695,23 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             pickle.dump(dri_motion_infos, fw)
 
         vsave_org_path, vsave_crop_path, total_time = self.run_pickle_driving(motion_pickle_path, source_path,
-                                                                              save_dir=save_dir)
+                                                                              save_dir=save_dir,
+                                                                              progress=progress)
 
         vsave_crop_path_new = os.path.splitext(vsave_crop_path)[0] + "-audio.mp4"
         vsave_org_path_new = os.path.splitext(vsave_org_path)[0] + "-audio.mp4"
 
         duration, fps = utils.get_video_info(vsave_crop_path)
+        update_progress(progress, 0.98, "Muxing audio into crop video")
         mux_audio(vsave_crop_path, driving_audio_path, vsave_crop_path_new, duration=duration, fps=fps)
+        update_progress(progress, 0.99, "Muxing audio into pasteback video")
         mux_audio(vsave_org_path, driving_audio_path, vsave_org_path_new, duration=duration, fps=fps)
 
         return vsave_org_path_new, vsave_crop_path_new, time.time() - t00
 
     def run_text_driving(self, driving_text, voice_name, source_path, **kwargs):
+        progress = kwargs.get("progress")
+        update_progress(progress, 0, "Preparing source")
         self._ensure_source_prepared(source_path, **kwargs)
         save_dir = kwargs.get("save_dir", f"./results/{datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')}")
         os.makedirs(save_dir, exist_ok=True)
@@ -505,6 +724,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
         audio_save_path = os.path.join(save_dir, f"mlx-audio-{voice_name}.wav")
         try:
+            update_progress(progress, 0, "Synthesizing driving audio")
             audio_save_path, sample_rate = self.text_to_speech.synthesize_to_file(
                 driving_text,
                 voice_name,
@@ -514,7 +734,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             raise gr.Error(f"MLX-audio text driving failed: {exc}", duration=5) from exc
         print(f"save audio to: {audio_save_path} ({sample_rate} Hz)")
         vsave_org_path, vsave_crop_path, total_time = self.run_audio_driving(audio_save_path, source_path,
-                                                                             save_dir=save_dir)
+                                                                             save_dir=save_dir,
+                                                                             progress=progress)
 
         return vsave_org_path, vsave_crop_path, total_time
 

@@ -10,6 +10,32 @@ import numpy as np
 from .mlx_landmark_model import MlxLandmarkModel
 
 
+def _rect_area(rect):
+    _, _, w, h = [float(v) for v in rect]
+    return max(w, 0.0) * max(h, 0.0)
+
+
+def _rect_iou(rect_a, rect_b):
+    ax, ay, aw, ah = [float(v) for v in rect_a]
+    bx, by, bw, bh = [float(v) for v in rect_b]
+
+    left = max(ax, bx)
+    top = max(ay, by)
+    right = min(ax + aw, bx + bw)
+    bottom = min(ay + ah, by + bh)
+    inter = max(0.0, right - left) * max(0.0, bottom - top)
+    union = _rect_area(rect_a) + _rect_area(rect_b) - inter
+    return 0.0 if union <= 0 else inter / union
+
+
+def _dedupe_rects(rects, iou_threshold=0.35):
+    kept = []
+    for rect in sorted(rects, key=_rect_area, reverse=True):
+        if all(_rect_iou(rect, kept_rect) <= iou_threshold for kept_rect in kept):
+            kept.append([int(v) for v in rect])
+    return kept
+
+
 class MlxFaceAnalysisModel:
     """Return face landmarks in the same list-of-arrays contract as MediaPipe."""
 
@@ -21,12 +47,17 @@ class MlxFaceAnalysisModel:
 
     def __init__(self, **kwargs):
         self.predict_type = "mlx"
-        self.max_num_faces = int(kwargs.get("max_num_faces", 1))
+        self.max_num_faces = max(1, int(kwargs.get("max_num_faces", 1)))
+        self.max_detection_candidates = max(
+            self.max_num_faces,
+            int(kwargs.get("max_detection_candidates", max(8, self.max_num_faces * 3))),
+        )
         self.refine_iters = int(kwargs.get("refine_iters", 1))
         self.min_face_size = float(kwargs.get("min_face_size", 24.0))
         self.max_detector_dim = int(kwargs.get("max_detector_dim", 960))
         self.cascade_scale_factor = float(kwargs.get("cascade_scale_factor", 1.05))
         self.cascade_min_neighbors = int(kwargs.get("cascade_min_neighbors", 3))
+        self.nms_iou_threshold = float(kwargs.get("nms_iou_threshold", 0.35))
         self.cascade_output_scale = float(kwargs.get("cascade_output_scale", 0.95))
         self.enable_face_cascade = bool(kwargs.get("enable_face_cascade", True))
         self.landmark = MlxLandmarkModel(**kwargs)
@@ -116,10 +147,10 @@ class MlxFaceAnalysisModel:
         if not detections:
             return []
 
-        detections.sort(key=lambda rect: rect[2] * rect[3], reverse=True)
+        detections = _dedupe_rects(detections, self.nms_iou_threshold)
         inv_scale = 1.0 / scale
         seeds = []
-        for rect in detections[: self.max_num_faces]:
+        for rect in detections[: self.max_detection_candidates]:
             x, y, w, h = [v * inv_scale for v in rect]
             if min(w, h) >= self.min_face_size:
                 seeds.append((self._seed_landmarks_from_bbox((x, y, w, h)), max(w, h) * self.cascade_output_scale))
@@ -148,8 +179,10 @@ class MlxFaceAnalysisModel:
             lmk = self._refine_landmark(img_rgb, seed, width, height, min_output_size)
             if lmk is not None:
                 faces.append(lmk)
+                if len(faces) >= self.max_num_faces:
+                    break
         if faces:
-            return faces[: self.max_num_faces]
+            return faces
 
         lmk = self.landmark.predict(img_rgb)
         lmk = self._refine_landmark(img_rgb, lmk, width, height)

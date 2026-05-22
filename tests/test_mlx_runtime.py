@@ -83,6 +83,9 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert cfg.animal_models.motion_extractor.dtype == "bf16"
     assert cfg.animal_models.app_feat_extractor.dtype == "bf16"
     assert cfg.models.face_analysis.name == "MlxFaceAnalysisModel"
+    assert cfg.models.face_analysis.max_num_faces == 3
+    assert cfg.models.face_analysis.max_detection_candidates >= cfg.models.face_analysis.max_num_faces
+    assert cfg.models.face_analysis.nms_iou_threshold == pytest.approx(0.35)
     assert cfg.animal_models.face_analysis.name == "MlxAnimalFaceAnalysisModel"
     assert "animal_xpose" not in cfg
 
@@ -104,6 +107,50 @@ def test_mlx_config_has_no_runtime_ort_models():
     assert not (ROOT / "requirements_convert.txt").exists()
     assert not (ROOT / "configs" / "onnx_infer.yaml").exists()
     assert not (ROOT / "configs" / "onnx_mp_infer.yaml").exists()
+
+
+def test_mlx_face_detector_dedupes_overlapping_cascade_rects():
+    from src.models.mlx_face_analysis_model import MlxFaceAnalysisModel
+
+    class FakeCascade:
+        def __init__(self, rects):
+            self.rects = np.asarray(rects, dtype=np.int32)
+
+        def detectMultiScale(self, *_args, **_kwargs):
+            return self.rects
+
+    model = object.__new__(MlxFaceAnalysisModel)
+    model.face_cascades = [
+        FakeCascade([[20, 30, 100, 100], [150, 40, 60, 60]]),
+        FakeCascade([[22, 32, 98, 98], [151, 41, 59, 59]]),
+    ]
+    model.max_num_faces = 3
+    model.max_detection_candidates = 12
+    model.min_face_size = 24.0
+    model.max_detector_dim = 960
+    model.cascade_scale_factor = 1.05
+    model.cascade_min_neighbors = 3
+    model.nms_iou_threshold = 0.35
+    model.cascade_output_scale = 1.0
+
+    seeds = model._detect_face_seeds(np.zeros((256, 256, 3), dtype=np.uint8))
+
+    assert len(seeds) == 2
+    assert [round(seed_size) for _seed, seed_size in seeds] == [100, 60]
+
+
+def test_multiface_crop_preview_keeps_fixed_writer_frame():
+    from src.pipelines.faster_live_portrait_pipeline import _compose_face_preview
+
+    crops = [np.full((512, 512, 3), value, dtype=np.uint8) for value in (40, 120, 220)]
+
+    preview = _compose_face_preview(crops)
+
+    assert preview.shape == (512, 512, 3)
+    assert preview.dtype == np.uint8
+    assert int(preview[64, 64, 0]) == 40
+    assert int(preview[64, 320, 0]) == 120
+    assert int(preview[320, 64, 0]) == 220
 
 
 def test_runtime_config_resolves_checkpoint_paths_to_hf_snapshots(tmp_path, monkeypatch):

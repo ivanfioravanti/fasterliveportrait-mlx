@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .mlx_face_analysis_model import MlxFaceAnalysisModel
+from .mlx_face_analysis_model import MlxFaceAnalysisModel, _dedupe_rects
 
 
 class MlxAnimalFaceAnalysisModel:
@@ -26,11 +26,16 @@ class MlxAnimalFaceAnalysisModel:
 
     def __init__(self, **kwargs):
         self.predict_type = "mlx"
-        self.max_num_faces = int(kwargs.get("max_num_faces", 1))
+        self.max_num_faces = max(1, int(kwargs.get("max_num_faces", 1)))
+        self.max_detection_candidates = max(
+            self.max_num_faces,
+            int(kwargs.get("max_detection_candidates", max(8, self.max_num_faces * 3))),
+        )
         self.min_face_size = int(kwargs.get("min_face_size", 40))
         self.max_detector_dim = int(kwargs.get("max_detector_dim", 960))
         self.cascade_scale_factor = float(kwargs.get("cascade_scale_factor", 1.05))
         self.cascade_min_neighbors = int(kwargs.get("cascade_min_neighbors", 3))
+        self.nms_iou_threshold = float(kwargs.get("nms_iou_threshold", 0.35))
         self.enable_mlx_bootstrap = bool(kwargs.get("enable_mlx_bootstrap", True))
         self.enable_cat_cascade = bool(kwargs.get("enable_cat_cascade", True))
         self.prefer_cat_cascade = bool(kwargs.get("prefer_cat_cascade", True))
@@ -97,14 +102,16 @@ class MlxAnimalFaceAnalysisModel:
         if not detections:
             return []
 
-        detections.sort(key=lambda rect: rect[2] * rect[3], reverse=True)
+        detections = _dedupe_rects(detections, self.nms_iou_threshold)
         faces = []
         inv_scale = 1.0 / scale
-        for rect in detections[: self.max_num_faces]:
+        for rect in detections[: self.max_detection_candidates]:
             x, y, w, h = [v * inv_scale for v in rect]
             if min(w, h) < self.min_face_size:
                 continue
             faces.append(self._landmarks_from_bbox((x, y, w, h)))
+            if len(faces) >= self.max_num_faces:
+                break
         return faces
 
     def predict(self, *data):

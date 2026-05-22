@@ -6,7 +6,7 @@
 2. In the <strong>Animation Options for Driving Video</strong> section, the <code>relative head rotation</code> and <code>smooth strength</code> options only take effect if the source input is a video.
 </div>
 <div style="font-size: 1.2em; margin-left: 20px;">
-3. Press the <strong>🚀 Animate</strong> button and wait for a moment. Your animated video will appear in the result block. This may take a few moments. If the input is a source video, the length of the animated video is the minimum of the length of the source video and the driving video.
+3. Press the <strong>Generate</strong> button and wait for a moment. Your animated video will appear in the result block. This may take a few moments. If the input is a source video, the length of the animated video is the minimum of the length of the source video and the driving video.
 </div>
 <div style="font-size: 1.2em; margin-left: 20px;">
 4. If you want to upload your own driving video, <strong>the best practice</strong>:
