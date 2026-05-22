@@ -13,16 +13,30 @@ Transformers, or Python-only model path as a temporary compatibility layer.
 - Conversion-only PyTorch: export scripts that read source PyTorch/Transformers
   checkpoints and write MLX `.npz` runtime weights.
 
-## Migration Order
+## Migration Status
 
-1. Keep the LivePortrait core MLX-only and avoid adding PyTorch back to that path.
-2. Port or replace JoyVASA audio-to-motion:
-   - export HuBERT/audio encoder weights into an MLX-compatible format,
-   - port the JoyVASA diffusion/Transformer blocks to MLX,
-   - verify generated motion sequences match the PyTorch baseline closely enough.
-3. Replace MediaPipe human face analysis with an MLX-compatible bootstrap/refiner.
-4. Once the Python runtime is MLX-only, map the model graph and preprocessing contracts
-   onto `mlx-swift`.
+The original runtime migration order is complete for the configured Python runtime:
+
+1. LivePortrait human and animal core models run through MLX `.npz` weights.
+2. JoyVASA audio-to-motion runs through MLX for the configured HuBERT audio feature
+   extractor and diffusion/motion generator.
+3. Human face analysis no longer uses MediaPipe in the default runtime.
+4. Animal source analysis no longer uses XPose in the default runtime.
+
+Remaining work is no longer a blocker for the configured runtime. It is about
+coverage hardening, optional upstream API parity, and future `mlx-swift` mapping.
+
+## Remaining Migration Order
+
+1. Keep the configured runtime MLX-only and avoid adding hidden PyTorch, ONNX,
+   Transformers, MediaPipe, or XPose fallbacks back to that path.
+2. Broaden JoyVASA coverage only if additional upstream JoyVASA audio encoders or
+   sampling options are needed. The configured runtime already uses the MLX audio
+   feature extractor before calling the MLX sampler; direct raw-audio input inside
+   `MlxJoyVASAMotionModel.sample()` and dynamic thresholding are intentionally not
+   required by the current pipeline.
+3. Map the model graph, preprocessing contracts, and postprocessing contracts onto
+   `mlx-swift`.
 
 ## Human Face Analysis MLX Progress
 
