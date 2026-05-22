@@ -144,6 +144,10 @@ def gpu_wrapped_execute_image(*args, **kwargs):
     return gradio_pipeline.execute_image(*args, **kwargs)
 
 
+def show_animation_progress_anchor():
+    return gr.update(visible=True, value=" ")
+
+
 def change_animal_model(is_animal, mlx_profile="quality"):
     gradio_pipeline.set_mlx_profile(mlx_profile)
     ensure_runtime_assets(gradio_pipeline.cfg)
@@ -401,6 +405,15 @@ app_css = """
 #flp-driving-text-group {
     margin-top: 0 !important;
 }
+
+#flp-animation-progress-anchor {
+    min-height: 96px;
+    overflow: visible !important;
+}
+
+#flp-animation-progress-anchor * {
+    overflow: visible !important;
+}
 """
 
 
@@ -521,6 +534,7 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
     gr.Markdown(load_description("assets/gradio/gradio_description_animate_clear.md"))
     with gr.Row():
         process_button_animation = gr.Button("Generate", variant="primary")
+    animation_progress_anchor = gr.Markdown(" ", elem_id="flp-animation-progress-anchor", visible=False)
 
     with gr.Accordion(open=True, label="Generated Result"):
         with gr.Column():
@@ -722,7 +736,7 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         outputs=[output_realtime_i2i],
         show_progress="hidden",
         trigger_mode="multiple",
-        stream_every=0.2,
+        stream_every=0.1,
         concurrency_limit=1,
         concurrency_id="flp_pipeline",
     )
@@ -738,6 +752,12 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         concurrency_id="flp_pipeline",
     )
     process_button_animation.click(
+        fn=show_animation_progress_anchor,
+        inputs=None,
+        outputs=[animation_progress_anchor],
+        queue=False,
+        show_progress="hidden",
+    ).then(
         fn=gradio_pipeline.execute_video,
         inputs=[
             source_image_input,
@@ -769,8 +789,15 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
             voice_name,
             mlx_profile
         ],
-        outputs=[output_video_i2v, output_video_concat_i2v, output_image_i2i, output_image_concat_i2i],
+        outputs=[
+            output_video_i2v,
+            output_video_concat_i2v,
+            output_image_i2i,
+            output_image_concat_i2i,
+            animation_progress_anchor,
+        ],
         show_progress="full",
+        show_progress_on=animation_progress_anchor,
         trigger_mode="once",
         concurrency_limit=1,
         concurrency_id="flp_pipeline",

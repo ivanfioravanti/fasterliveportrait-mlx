@@ -185,6 +185,16 @@ def test_crop_image_can_replicate_border_pixels():
     assert int(replicated_crop[0, 0, 0]) == 255
 
 
+def test_gradio_generation_outputs_include_progress_anchor():
+    from src.pipelines.gradio_live_portrait_pipeline import GradioLivePortraitPipeline
+
+    outputs = GradioLivePortraitPipeline._video_outputs("result.mp4", "crop.mp4")
+
+    assert len(outputs) == 5
+    assert outputs[-1]["value"] == ""
+    assert outputs[-1]["visible"] is False
+
+
 def test_runtime_config_resolves_checkpoint_paths_to_hf_snapshots(tmp_path, monkeypatch):
     monkeypatch.delenv("FLIP_CHECKPOINT_DIR", raising=False)
 

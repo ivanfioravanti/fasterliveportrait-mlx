@@ -5,11 +5,13 @@
 import gradio as gr
 import cv2
 import datetime
+import gc
 import os
 import time
 from tqdm import tqdm
 import pickle
 import numpy as np
+import mlx.core as mx
 from .faster_live_portrait_pipeline import FasterLivePortraitPipeline
 from .joyvasa_audio_to_motion_pipeline import JoyVASAAudio2MotionPipeline
 from .mlx_audio_tts import MLX_AUDIO_KOKORO_MODEL, MLXAudioTextToSpeech
@@ -149,6 +151,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             gr.update(visible=True, value=video_path_concat),
             gr.update(visible=False, value=None),
             gr.update(visible=False, value=None),
+            gr.update(visible=False, value=""),
         )
 
     @staticmethod
@@ -164,6 +167,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             gr.update(visible=False, value=None),
             gr.update(visible=True, value=image_path),
             gr.update(visible=True, value=image_path_concat),
+            gr.update(visible=False, value=""),
         )
 
     def _require_joyvasa_assets(self):
@@ -370,6 +374,17 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     ):
         """ for video driven potrait animation
         """
+        # Release MLX/GPU buffers and any unreferenced Python objects held
+        # from previous generations. Without this the active+cache buffers
+        # accumulate across Generate clicks on Apple unified memory and a
+        # subsequent run hits a memory-pressure threshold that surfaces as
+        # a native segfault rather than a clean OOM (reliably ~3rd run).
+        gc.collect()
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+
         input_source_path = self._select_source_path(input_source_image_path, input_source_video_path, source_mode)
         self.set_mlx_profile(mlx_profile)
 
