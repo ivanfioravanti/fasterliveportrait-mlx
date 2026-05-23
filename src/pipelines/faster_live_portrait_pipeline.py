@@ -609,7 +609,7 @@ class FasterLivePortraitPipeline:
                 )
             else:
                 out_crop = warping_spade.predict(f_s, x_s, x_d_i_new)
-            if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
+            if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                 I_p_pstbk = paste_back_numpy(out_crop, M, I_p_pstbk, mask_ori_float)
             face_crops.append(out_crop)
         if realtime:
