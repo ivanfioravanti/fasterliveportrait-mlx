@@ -58,8 +58,32 @@ def mux_audio(video_path, audio_path, output_path, duration=None, fps=None):
         cmd.extend(["-t", str(duration)])
     if fps is not None:
         cmd.extend(["-r", str(fps)])
+    cmd.extend(["-movflags", "+faststart"])
     cmd.append(output_path)
     run_ffmpeg(cmd)
+
+
+def finalize_browser_mp4(video_path, fps=None):
+    """Transcode OpenCV mp4v output to browser-safe H.264 for inline playback."""
+    web_path = os.path.splitext(video_path)[0] + "-web.mp4"
+    cmd = [
+        FFMPEG,
+        "-y",
+        "-i",
+        video_path,
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+    ]
+    if fps is not None:
+        cmd.extend(["-r", str(fps)])
+    cmd.append(web_path)
+    run_ffmpeg(cmd)
+    return web_path
 
 
 def update_progress(progress, value, desc):
@@ -83,7 +107,13 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     _MLX_BUFFER_RELEASE_INTERVAL = 96
 
     def __init__(self, cfg, **kwargs):
-        super(GradioLivePortraitPipeline, self).__init__(cfg, **kwargs)
+        # Defer MLX weight loading until the first inference call. Keeping models
+        # resident while Gradio serves uploads/video playback in worker threads
+        # correlates with native segfaults on Apple unified memory.
+        self.cfg = cfg
+        self.init_vars(**kwargs)
+        self.model_dict = {}
+        self.is_animal = False
         self.joyvasa_pipe = None
         self.text_to_speech = None
         self._realtime_settings_key = None
@@ -172,6 +202,42 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             mx.clear_cache()
         except Exception:
             pass
+
+    def _release_generation_caches(self):
+        """Drop large CPU-side frame caches after a run.
+
+        Keeping src_imgs/src_infos resident while the user plays back output
+        video competes with MLX model weights for unified memory and correlates
+        with native segfaults during idle Gradio file serving.
+        """
+        self.src_imgs = []
+        self.src_infos = []
+        gc.collect()
+
+    def _ensure_models_loaded(self, is_animal=False):
+        if not self.model_dict:
+            self.init_models(is_animal=is_animal)
+        elif is_animal != self.is_animal:
+            self.init_models(is_animal=is_animal)
+
+    def _park_mlx_models(self):
+        """Unload MLX weights after a batch job so idle UI work cannot fault Metal."""
+        self._release_mlx_memory()
+        self._release_generation_caches()
+        if self.model_dict:
+            self.clean_models()
+        self.joyvasa_pipe = None
+        self.text_to_speech = None
+        gc.collect()
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+
+    def _finalize_video_outputs(self, crop_path, org_path, fps=None):
+        crop_web = finalize_browser_mp4(crop_path, fps=fps)
+        org_web = finalize_browser_mp4(org_path, fps=fps)
+        return org_web, crop_web
 
     @classmethod
     def _calibrate_animal_retarget_ratios(cls, input_eye_ratio: float, input_lip_ratio: float) -> tuple[float, float]:
@@ -304,6 +370,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 self._realtime_last_warning = now
             return gr.update()
 
+        self._ensure_models_loaded(is_animal=flag_is_animal)
+
         args_user = {
             'source': input_source_path,
             'driving': '0',
@@ -427,6 +495,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     ):
         """ for video driven potrait animation
         """
+        self._ensure_models_loaded(is_animal=flag_is_animal)
         self._release_mlx_memory()
         try:
             return self._execute_video_impl(
@@ -461,7 +530,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 progress=progress,
             )
         finally:
-            self._release_mlx_memory()
+            self._park_mlx_models()
 
     def _execute_video_impl(
             self,
@@ -724,6 +793,9 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
             return vsave_org_path_new, vsave_crop_path_new, time.time() - t00
         else:
+            vsave_org_path, vsave_crop_path = self._finalize_video_outputs(
+                vsave_crop_path, vsave_org_path, fps=fps
+            )
             return vsave_org_path, vsave_crop_path, time.time() - t00
 
     def run_pickle_driving(self, driving_pickle_path, source_path, **kwargs):
@@ -807,6 +879,9 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         vout_crop.release()
         vout_org.release()
 
+        vsave_org_path, vsave_crop_path = self._finalize_video_outputs(
+            vsave_crop_path, vsave_org_path, fps=fps
+        )
         return vsave_org_path, vsave_crop_path, total_time
 
     def run_audio_driving(self, driving_audio_path, source_path, **kwargs):
@@ -890,6 +965,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             gr.Warning("Set valid eye and lip retargeting ratios first.", duration=5)
             return None, None
 
+        self._ensure_models_loaded(is_animal=self.is_animal)
         self._release_mlx_memory()
         try:
             # disposable feature
@@ -922,7 +998,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             gr.Info("Run successfully!", duration=2)
             return out, out_to_ori_blend
         finally:
-            self._release_mlx_memory()
+            self._park_mlx_models()
 
     def prepare_retargeting(self, input_image, flag_do_crop=True):
         """ for single image retargeting

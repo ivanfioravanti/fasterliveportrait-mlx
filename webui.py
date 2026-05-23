@@ -3,13 +3,18 @@
 """
 The entrance of the gradio
 """
-import gradio as gr
 import argparse
 import faulthandler
 import os
 import os.path as osp
 import shlex
 import threading
+
+from src.utils.tqdm_utils import configure_tqdm_single_process
+
+configure_tqdm_single_process()
+
+import gradio as gr
 import gradio.flagging as gradio_flagging
 from omegaconf import OmegaConf
 
@@ -82,6 +87,11 @@ def patch_gradio_static_file_resolution():
 
 patch_gradio_static_file_resolution()
 
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+os.makedirs(RESULTS_DIR, exist_ok=True)
+gr.set_static_paths(RESULTS_DIR)
+
 
 def patch_gradio_queue_analytics():
     # Gradio's Queue.compute_analytics_summary builds a pandas DataFrame
@@ -102,6 +112,33 @@ def patch_gradio_queue_analytics():
 
 
 patch_gradio_queue_analytics()
+
+
+def patch_anyio_default_thread_limiter():
+    # Gradio max_threads only caps queued handlers. Upload preprocess, output
+    # postprocess, and analytics still use anyio's default limiter (40 tokens),
+    # which lets many native extensions run concurrently with MLX and segfault.
+    from anyio import CapacityLimiter
+    from anyio.to_thread import current_default_thread_limiter
+
+    _single_thread_limiter = CapacityLimiter(1)
+    _original_current_default_thread_limiter = current_default_thread_limiter
+
+    def limited_default_thread_limiter():
+        return _single_thread_limiter
+
+    import anyio.to_thread as anyio_to_thread
+
+    anyio_to_thread.current_default_thread_limiter = limited_default_thread_limiter
+
+    import anyio._backends._asyncio as anyio_asyncio_backend
+
+    anyio_asyncio_backend.AsyncIOBackend.current_default_thread_limiter = classmethod(
+        lambda cls: _single_thread_limiter
+    )
+
+
+patch_anyio_default_thread_limiter()
 
 
 def enable_fault_handler():
@@ -576,11 +613,19 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         with gr.Column():
             with gr.Row():
                 with gr.Column():
-                    output_video_i2v = gr.Video(autoplay=False,
-                                                label="The animated video in the original image space",
-                                                visible=False)
+                    output_video_i2v = gr.Video(
+                        autoplay=False,
+                        format="mp4",
+                        label="The animated video in the original image space",
+                        visible=False,
+                    )
                 with gr.Column():
-                    output_video_concat_i2v = gr.Video(autoplay=False, label="The animated video", visible=False)
+                    output_video_concat_i2v = gr.Video(
+                        autoplay=False,
+                        format="mp4",
+                        label="The animated video",
+                        visible=False,
+                    )
             with gr.Row():
                 with gr.Column():
                     output_image_i2i = gr.Image(format="png", type="numpy",
@@ -684,7 +729,6 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         inputs=cli_command_inputs,
         outputs=[cli_command],
         api_name=False,
-        queue=False,
         show_progress="hidden",
     )
     for cli_input in cli_command_inputs:
@@ -693,7 +737,6 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
             inputs=cli_command_inputs,
             outputs=[cli_command],
             api_name=False,
-            queue=False,
             show_progress="hidden",
         )
 
@@ -715,7 +758,6 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         update_source_mode,
         inputs=[source_mode],
         outputs=[source_image_group, source_video_group],
-        queue=False,
         show_progress="hidden",
     )
     driving_mode.change(
@@ -739,7 +781,6 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
             vx_ratio_crop_driving_video,
             vy_ratio_crop_driving_video,
         ],
-        queue=False,
         show_progress="hidden",
     )
     driving_webcam_input.stream(
@@ -791,7 +832,6 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         fn=show_animation_progress_anchor,
         inputs=None,
         outputs=[animation_progress_anchor],
-        queue=False,
         show_progress="hidden",
     ).then(
         fn=gpu_wrapped_execute_video,
@@ -846,6 +886,7 @@ if __name__ == '__main__':
         server_name=args.host_ip,
         show_error=True,
         max_threads=1,
+        allowed_paths=[RESULTS_DIR],
         theme=demo_theme,
         js=js_func,
         css=app_css,
