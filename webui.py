@@ -131,6 +131,19 @@ gradio_pipeline = GradioLivePortraitPipeline(infer_cfg)
 gradio_pipeline.set_mlx_profile(args.mlx_profile)
 demo_theme = gr.themes.Soft(font=[gr.themes.GoogleFont("Plus Jakarta Sans")])
 
+# Serialize MLX inference and profile/env updates. Gradio serves uploads and
+# queued inference on different threads; macOS setenv/getenv is not thread-safe
+# and can segfault when apply_mlx_profile races the upload handler.
+_pipeline_lock = threading.Lock()
+
+
+def _with_pipeline_lock(fn):
+    def wrapper(*args, **kwargs):
+        with _pipeline_lock:
+            return fn(*args, **kwargs)
+
+    return wrapper
+
 
 def gpu_wrapped_execute_video(*args, **kwargs):
     return gradio_pipeline.execute_video(*args, **kwargs)
@@ -144,20 +157,29 @@ def gpu_wrapped_execute_image(*args, **kwargs):
     return gradio_pipeline.execute_image(*args, **kwargs)
 
 
+gpu_wrapped_execute_video = _with_pipeline_lock(gpu_wrapped_execute_video)
+gpu_wrapped_execute_realtime = _with_pipeline_lock(gpu_wrapped_execute_realtime)
+gpu_wrapped_execute_image = _with_pipeline_lock(gpu_wrapped_execute_image)
+
+
 def show_animation_progress_anchor():
     return gr.update(visible=True, value=" ")
 
 
+@_with_pipeline_lock
 def change_animal_model(is_animal, mlx_profile="quality"):
     gradio_pipeline.set_mlx_profile(mlx_profile)
     ensure_runtime_assets(gradio_pipeline.cfg)
+    gradio_pipeline._release_mlx_memory()
     gradio_pipeline.clean_models()
     gradio_pipeline.init_models(is_animal=is_animal)
     return gr.update(value=not is_animal)
 
 
+@_with_pipeline_lock
 def change_mlx_profile(mlx_profile, is_animal):
     gradio_pipeline.set_mlx_profile(mlx_profile)
+    gradio_pipeline._release_mlx_memory()
     gradio_pipeline.clean_models()
     gradio_pipeline.init_models(is_animal=is_animal)
     return describe_mlx_profile(mlx_profile or "quality")
@@ -758,7 +780,7 @@ with gr.Blocks(delete_cache=(300, 600)) as demo:
         queue=False,
         show_progress="hidden",
     ).then(
-        fn=gradio_pipeline.execute_video,
+        fn=gpu_wrapped_execute_video,
         inputs=[
             source_image_input,
             source_video_input,

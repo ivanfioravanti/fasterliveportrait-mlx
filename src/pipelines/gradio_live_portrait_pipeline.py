@@ -121,6 +121,53 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                 warping_spade.reset_temporal_cache()
         return settings
 
+    def _release_mlx_memory(self):
+        """Release MLX device buffers and drop references to cached mx arrays held
+        inside models (especially warping_spade). This must be called around heavy
+        inference paths because Apple unified memory pressure after only 2-3 runs
+        surfaces as native segfaults instead of clean OOM (the root cause of the
+        web-ui server dying after a few Generate/Retarget usages).
+
+        The prior mitigation (gc+clear only inside execute_video) was incomplete.
+        """
+        # Drop pinned mx.array refs from warping_spade caches so they can be freed.
+        ws = None
+        if hasattr(self, "model_dict"):
+            ws = self.model_dict.get("warping_spade")
+        if ws is not None:
+            for attr in (
+                "_feature_cache_key",
+                "_feature_cache_value",
+                "_kp_source_cache_key",
+                "_kp_source_cache_value",
+                "_temporal_warp_value",
+                "_temporal_warp_prev_kp_np",
+            ):
+                if hasattr(ws, attr):
+                    setattr(ws, attr, None)
+            if hasattr(ws, "reset_temporal_cache"):
+                try:
+                    ws.reset_temporal_cache()
+                except Exception:
+                    pass
+
+        # JoyVASA models (if loaded) - drop any large internal state they may hold.
+        jpipe = getattr(self, "joyvasa_pipe", None)
+        if jpipe is not None:
+            for mname in ("motion_model", "audio_model", "model"):
+                m = getattr(jpipe, mname, None)
+                if m is not None:
+                    # Best-effort: clear common cache attrs if present on the MLX model wrappers.
+                    for attr in ("_cache", "_feature_cache", "_model_cache"):
+                        if hasattr(m, attr):
+                            setattr(m, attr, None)
+
+        gc.collect()
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+
     @classmethod
     def _calibrate_animal_retarget_ratios(cls, input_eye_ratio: float, input_lip_ratio: float) -> tuple[float, float]:
         eye_ratio = float(np.clip(float(input_eye_ratio), 0.0, cls._ANIMAL_EYE_TARGET_MAX))
@@ -310,6 +357,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
         self._realtime_prepare_retry_key = None
         if settings_changed:
             self._realtime_settings_key = settings_key
+            self._release_mlx_memory()
 
         frame_rgb = np.asarray(webcam_frame)
         if frame_rgb.ndim != 3 or frame_rgb.shape[2] < 3:
@@ -374,17 +422,74 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     ):
         """ for video driven potrait animation
         """
-        # Release MLX/GPU buffers and any unreferenced Python objects held
-        # from previous generations. Without this the active+cache buffers
-        # accumulate across Generate clicks on Apple unified memory and a
-        # subsequent run hits a memory-pressure threshold that surfaces as
-        # a native segfault rather than a clean OOM (reliably ~3rd run).
-        gc.collect()
+        self._release_mlx_memory()
         try:
-            mx.clear_cache()
-        except Exception:
-            pass
+            return self._execute_video_impl(
+                input_source_image_path=input_source_image_path,
+                input_source_video_path=input_source_video_path,
+                input_driving_video_path=input_driving_video_path,
+                input_driving_image_path=input_driving_image_path,
+                input_driving_pickle_path=input_driving_pickle_path,
+                input_driving_audio_path=input_driving_audio_path,
+                input_driving_text=input_driving_text,
+                source_mode=source_mode,
+                driving_mode=driving_mode,
+                flag_relative_input=flag_relative_input,
+                flag_do_crop_input=flag_do_crop_input,
+                flag_remap_input=flag_remap_input,
+                driving_multiplier=driving_multiplier,
+                flag_stitching=flag_stitching,
+                flag_crop_driving_video_input=flag_crop_driving_video_input,
+                flag_video_editing_head_rotation=flag_video_editing_head_rotation,
+                flag_is_animal=flag_is_animal,
+                animation_region=animation_region,
+                scale=scale,
+                vx_ratio=vx_ratio,
+                vy_ratio=vy_ratio,
+                scale_crop_driving_video=scale_crop_driving_video,
+                vx_ratio_crop_driving_video=vx_ratio_crop_driving_video,
+                vy_ratio_crop_driving_video=vy_ratio_crop_driving_video,
+                driving_smooth_observation_variance=driving_smooth_observation_variance,
+                cfg_scale=cfg_scale,
+                voice_name=voice_name,
+                mlx_profile=mlx_profile,
+                progress=progress,
+            )
+        finally:
+            self._release_mlx_memory()
 
+    def _execute_video_impl(
+            self,
+            input_source_image_path=None,
+            input_source_video_path=None,
+            input_driving_video_path=None,
+            input_driving_image_path=None,
+            input_driving_pickle_path=None,
+            input_driving_audio_path=None,
+            input_driving_text=None,
+            source_mode=None,
+            driving_mode=None,
+            flag_relative_input=True,
+            flag_do_crop_input=True,
+            flag_remap_input=True,
+            driving_multiplier=1.0,
+            flag_stitching=True,
+            flag_crop_driving_video_input=True,
+            flag_video_editing_head_rotation=False,
+            flag_is_animal=False,
+            animation_region="all",
+            scale=2.3,
+            vx_ratio=0.0,
+            vy_ratio=-0.125,
+            scale_crop_driving_video=2.2,
+            vx_ratio_crop_driving_video=0.0,
+            vy_ratio_crop_driving_video=-0.1,
+            driving_smooth_observation_variance=1e-7,
+            cfg_scale=4.0,
+            voice_name='af',
+            mlx_profile="quality",
+            progress=gr.Progress(),
+    ):
         input_source_path = self._select_source_path(input_source_image_path, input_source_video_path, source_mode)
         self.set_mlx_profile(mlx_profile)
 
@@ -770,35 +875,39 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             gr.Warning("Set valid eye and lip retargeting ratios first.", duration=5)
             return None, None
 
-        # disposable feature
-        f_s_user, x_s_user, source_lmk_user, crop_M_c2o, mask_ori, img_rgb = \
-            self.prepare_retargeting(input_image, flag_do_crop)
-        if self.is_animal:
-            input_eye_ratio, input_lip_ratio = self._calibrate_animal_retarget_ratios(
-                input_eye_ratio,
-                input_lip_ratio,
-            )
+        self._release_mlx_memory()
+        try:
+            # disposable feature
+            f_s_user, x_s_user, source_lmk_user, crop_M_c2o, mask_ori, img_rgb = \
+                self.prepare_retargeting(input_image, flag_do_crop)
+            if self.is_animal:
+                input_eye_ratio, input_lip_ratio = self._calibrate_animal_retarget_ratios(
+                    input_eye_ratio,
+                    input_lip_ratio,
+                )
 
-        # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)
-        combined_eye_ratio_tensor = self.calc_combined_eye_ratio([[input_eye_ratio]], source_lmk_user)
-        eyes_delta = self.retarget_eye(x_s_user, combined_eye_ratio_tensor)
-        # ∆_lip,i = R_lip(x_s; c_s,lip, c_d,lip,i)
-        combined_lip_ratio_tensor = self.calc_combined_lip_ratio([[input_lip_ratio]], source_lmk_user)
-        lip_delta = self.retarget_lip(x_s_user, combined_lip_ratio_tensor)
-        num_kp = x_s_user.shape[1]
-        # default: use x_s
-        x_d_new = x_s_user + eyes_delta.reshape(-1, num_kp, 3) + lip_delta.reshape(-1, num_kp, 3)
-        # D(W(f_s; x_s, x′_d))
-        out = self.model_dict["warping_spade"].predict(
-            f_s_user,
-            x_s_user,
-            x_d_new,
-            return_numpy=True,
-            return_uint8=True,
-        )
-        out_to_ori_blend = paste_back_numpy(out, crop_M_c2o, img_rgb, mask_ori)
-        gr.Info("Run successfully!", duration=2)
-        return out, out_to_ori_blend
+            # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)
+            combined_eye_ratio_tensor = self.calc_combined_eye_ratio([[input_eye_ratio]], source_lmk_user)
+            eyes_delta = self.retarget_eye(x_s_user, combined_eye_ratio_tensor)
+            # ∆_lip,i = R_lip(x_s; c_s,lip, c_d,lip,i)
+            combined_lip_ratio_tensor = self.calc_combined_lip_ratio([[input_lip_ratio]], source_lmk_user)
+            lip_delta = self.retarget_lip(x_s_user, combined_lip_ratio_tensor)
+            num_kp = x_s_user.shape[1]
+            # default: use x_s
+            x_d_new = x_s_user + eyes_delta.reshape(-1, num_kp, 3) + lip_delta.reshape(-1, num_kp, 3)
+            # D(W(f_s; x_s, x′_d))
+            out = self.model_dict["warping_spade"].predict(
+                f_s_user,
+                x_s_user,
+                x_d_new,
+                return_numpy=True,
+                return_uint8=True,
+            )
+            out_to_ori_blend = paste_back_numpy(out, crop_M_c2o, img_rgb, mask_ori)
+            gr.Info("Run successfully!", duration=2)
+            return out, out_to_ori_blend
+        finally:
+            self._release_mlx_memory()
 
     def prepare_retargeting(self, input_image, flag_do_crop=True):
         """ for single image retargeting
