@@ -80,6 +80,7 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
     _ANIMAL_EYE_TARGET_MAX = 0.6
     _ANIMAL_LIP_TARGET_SCALE = 0.375
     _ANIMAL_LIP_TARGET_MAX = 0.30
+    _MLX_BUFFER_RELEASE_INTERVAL = 96
 
     def __init__(self, cfg, **kwargs):
         super(GradioLivePortraitPipeline, self).__init__(cfg, **kwargs)
@@ -162,6 +163,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
                         if hasattr(m, attr):
                             setattr(m, attr, None)
 
+        self._release_mlx_buffers()
+
+    def _release_mlx_buffers(self):
+        """Drop unattached MLX pool memory without clearing live model caches."""
         gc.collect()
         try:
             mx.clear_cache()
@@ -666,7 +671,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
         infer_times = []
         print(f"render {max_frame} frames to {vsave_crop_path} and {vsave_org_path}", flush=True)
-        for i in tqdm(range(max_frame), desc="Rendering frames", unit="frame"):
+        frame_iter = range(max_frame)
+        if progress is None:
+            frame_iter = tqdm(frame_iter, desc="Rendering frames", unit="frame")
+        for i in frame_iter:
             ret, frame = vcap.read()
             if not ret:
                 break
@@ -689,6 +697,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
             vout_org.write(out_org)
             update_frame_progress(progress, i, max_frame, "Rendering frames")
+            if progress is not None and i > 0 and (i + 1) % self._MLX_BUFFER_RELEASE_INTERVAL == 0:
+                self._release_mlx_buffers()
         update_progress(progress, 0.98, "Finalizing video files")
         print("finalizing video writers", flush=True)
         vcap.release()
@@ -759,7 +769,10 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
 
         infer_times = []
         print(f"render {max_frame} pickle frames to {vsave_crop_path} and {vsave_org_path}", flush=True)
-        for frame_ind in tqdm(range(max_frame), desc="Rendering pickle frames", unit="frame"):
+        frame_iter = range(max_frame)
+        if progress is None:
+            frame_iter = tqdm(frame_iter, desc="Rendering pickle frames", unit="frame")
+        for frame_ind in frame_iter:
             t0 = time.time()
             first_frame = frame_ind == 0
             dri_motion_info_ = [motion_lst[frame_ind]]
@@ -787,6 +800,8 @@ class GradioLivePortraitPipeline(FasterLivePortraitPipeline):
             out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
             vout_org.write(out_org)
             update_frame_progress(progress, frame_ind, max_frame, "Rendering pickle frames")
+            if progress is not None and frame_ind > 0 and (frame_ind + 1) % self._MLX_BUFFER_RELEASE_INTERVAL == 0:
+                self._release_mlx_buffers()
         update_progress(progress, 0.98, "Finalizing video files")
         total_time = time.time() - t00
         vout_crop.release()

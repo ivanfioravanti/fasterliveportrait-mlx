@@ -44,7 +44,7 @@ def patch_gradio_static_file_resolution():
         except (OSError, ValueError):
             return False
 
-    def safe_is_static_file(file_path):
+    def safe_is_static_file(file_path, static_files=None):
         if isinstance(file_path, FileData):
             file_path = file_path.path
         if not isinstance(file_path, (str, os.PathLike)):
@@ -53,7 +53,8 @@ def patch_gradio_static_file_resolution():
             file_abs = os.path.abspath(os.fspath(file_path))
             if not os.path.exists(file_abs):
                 return False
-            for static_path in list(_StaticFiles.all_paths):
+            paths = static_files if static_files is not None else list(_StaticFiles.all_paths)
+            for static_path in paths:
                 static_abs = os.path.abspath(os.fspath(static_path))
                 try:
                     if os.path.commonpath([file_abs, static_abs]) == static_abs:
@@ -64,9 +65,19 @@ def patch_gradio_static_file_resolution():
             return False
         return False
 
+    def safe_set_static_paths(paths):
+        if isinstance(paths, (str, os.PathLike)):
+            paths = [paths]
+        for path in paths:
+            _StaticFiles.all_paths.append(os.path.abspath(os.fspath(path)))
+
     gradio_utils.is_in_or_equal = safe_is_in_or_equal
+    gradio_utils._is_static_file = safe_is_static_file
+    gradio_utils.is_static_file = lambda file_path: safe_is_static_file(
+        file_path, _StaticFiles.all_paths
+    )
+    gradio_utils.set_static_paths = safe_set_static_paths
     gradio_processing_utils.is_in_or_equal = safe_is_in_or_equal
-    gradio_utils.is_static_file = safe_is_static_file
 
 
 patch_gradio_static_file_resolution()
@@ -80,6 +91,9 @@ def patch_gradio_queue_analytics():
     # purely internal observability for the queue and is not surfaced to
     # the UI, so we short-circuit it to the empty cached value.
     import gradio.queueing as gradio_queueing
+
+    if not hasattr(gradio_queueing.Queue, "compute_analytics_summary"):
+        return
 
     def safe_compute_analytics_summary(self, event_analytics):
         return self.cached_event_analytics_summary
