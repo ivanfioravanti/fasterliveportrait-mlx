@@ -100,6 +100,19 @@ def maybe_enable_auto_driving_crop(infer_cfg, vcap):
         print(f"auto enabled driving crop for non-square input: {width}x{height}")
 
 
+def compose_realtime_side_by_side(camera_bgr, result_bgr):
+    target_h, target_w = result_bgr.shape[:2]
+    camera_h, camera_w = camera_bgr.shape[:2]
+    scale = max(target_w / camera_w, target_h / camera_h)
+    resized_w = max(target_w, int(round(camera_w * scale)))
+    resized_h = max(target_h, int(round(camera_h * scale)))
+    camera_bgr = cv2.resize(camera_bgr, (resized_w, resized_h))
+    x0 = max(0, (resized_w - target_w) // 2)
+    y0 = max(0, (resized_h - target_h) // 2)
+    camera_bgr = camera_bgr[y0:y0 + target_h, x0:x0 + target_w]
+    return np.concatenate([camera_bgr, result_bgr], axis=1)
+
+
 def run_with_video(args):
     from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
     from src.utils.utils import video_has_audio
@@ -175,7 +188,10 @@ def run_with_video(args):
         else:
             if infer_cfg.infer_params.flag_pasteback:
                 out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
-                cv2.imshow('Render', out_org)
+                if args.realtime_preview_side_by_side:
+                    cv2.imshow('Render', compose_realtime_side_by_side(frame, out_org))
+                else:
+                    cv2.imshow('Render', out_org)
             else:
                 # image show in realtime mode
                 cv2.imshow('Render', out_crop)
@@ -389,6 +405,8 @@ if __name__ == '__main__':
                         help='driving video')
     parser.add_argument('--cfg', required=False, type=str, default="configs/mlx_infer.yaml", help='inference config')
     parser.add_argument('--realtime', action='store_true', help='realtime inference')
+    parser.add_argument('--realtime-preview-side-by-side', action='store_true',
+                        help='show camera/driving crop next to the realtime render window')
     parser.add_argument('--animal', action='store_true', help='use animal model')
     parser.add_argument('--paste_back', '--paste-back', action='store_true', default=False, help='paste back to origin image')
     parser.add_argument('--det-thresh', type=float, default=None,

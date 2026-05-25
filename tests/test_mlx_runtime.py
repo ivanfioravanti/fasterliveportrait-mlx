@@ -467,7 +467,7 @@ def test_mlx_one_frame_render_is_not_black(source_name, driving_name, is_animal,
     frame = cv2.imread(str(driving_path), cv2.IMREAD_COLOR)
     assert frame is not None
 
-    _, out_crop, _, _ = pipe.run(
+    _, out_crop, out_org, _ = pipe.run(
         frame,
         pipe.src_imgs[0],
         pipe.src_infos[0],
@@ -475,6 +475,9 @@ def test_mlx_one_frame_render_is_not_black(source_name, driving_name, is_animal,
         first_frame=True,
     )
     _assert_non_black_rgb(out_crop, label=f"is_animal={is_animal}")
+    assert out_org.dtype == np.uint8
+    assert out_org.shape == pipe.src_imgs[0].shape
+    assert not np.array_equal(out_org, pipe.src_imgs[0])
 
 
 def test_mlx_retargeting_smoke_changes_output():
