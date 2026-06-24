@@ -437,7 +437,7 @@ class FasterLivePortraitPipeline:
                         c_d_eye_before_animation_frame_zero, source_lmk)
                     eye_delta_before_animation = self.retarget_eye(x_s, combined_eye_ratio_tensor_before_animation)
 
-                if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
+                if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                     mask_ori_float = prepare_paste_back(self.mask_crop, M,
                                                         dsize=(self.src_imgs[0].shape[1], self.src_imgs[0].shape[0]))
             else:
@@ -609,7 +609,7 @@ class FasterLivePortraitPipeline:
                 )
             else:
                 out_crop = warping_spade.predict(f_s, x_s, x_d_i_new)
-            if not realtime and self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
+            if self.cfg.infer_params.flag_pasteback and self.cfg.infer_params.flag_do_crop:
                 I_p_pstbk = paste_back_numpy(out_crop, M, I_p_pstbk, mask_ori_float)
             face_crops.append(out_crop)
         if realtime:

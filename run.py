@@ -234,10 +234,16 @@ def run_with_video(args):
         else:
             if infer_cfg.infer_params.flag_pasteback:
                 out_org = cv2.cvtColor(out_org, cv2.COLOR_RGB2BGR)
-                cv2.imshow('Render', out_org)
+                view = out_org
             else:
                 # image show in realtime mode
-                cv2.imshow('Render', out_crop)
+                view = out_crop
+            if args.show_input:
+                # prepend the raw webcam frame so the driving input can be visually checked
+                vh = view.shape[0]
+                cam_view = cv2.resize(frame, (frame.shape[1] * vh // frame.shape[0], vh))
+                view = np.concatenate([cam_view, view], axis=1)
+            cv2.imshow('Render', view)
             # 按下'q'键退出循环
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
@@ -448,6 +454,8 @@ if __name__ == '__main__':
                         help='driving video')
     parser.add_argument('--cfg', required=False, type=str, default="configs/mlx_infer.yaml", help='inference config')
     parser.add_argument('--realtime', action='store_true', help='realtime inference')
+    parser.add_argument('--show-input', action=argparse.BooleanOptionalAction, default=True,
+                        help='in realtime mode, show the live webcam input beside the generated output')
     parser.add_argument('--list-cameras', action='store_true',
                         help='enumerate cameras, report which deliver live frames, then exit')
     parser.add_argument('--animal', action='store_true', help='use animal model')
