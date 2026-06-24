@@ -100,6 +100,72 @@ def maybe_enable_auto_driving_crop(infer_cfg, vcap):
         print(f"auto enabled driving crop for non-square input: {width}x{height}")
 
 
+def probe_cameras(max_indices=8, n_warm=8, n_test=15):
+    """Enumerate cameras and report which ones deliver live (changing) frames.
+
+    macOS AVFoundation enumerates physical and virtual cameras (OBS Virtual
+    Camera, iPhone Continuity Camera, ...) whose index ordering is not stable,
+    and some of those devices return a frozen/static frame. This warms each
+    device up and measures real frame-to-frame motion so the user can pick a
+    live index.
+    """
+    results = []
+    for idx in range(max_indices):
+        cap = cv2.VideoCapture(idx)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        # discard auto-exposure / stale-buffer frames before measuring motion
+        for _ in range(n_warm):
+            cap.read()
+        prev = None
+        diffs = []
+        for _ in range(n_test):
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
+            gray = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 64))
+            if prev is not None:
+                diffs.append(float(np.abs(gray.astype(np.int16) - prev.astype(np.int16)).mean()))
+            prev = gray
+        if not diffs:
+            status = "no frames"
+        else:
+            status = "live" if float(np.mean(diffs)) > 0.5 else "FROZEN/static"
+        results.append(
+            (idx, status, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), cap.get(cv2.CAP_PROP_FPS))
+        )
+        cap.release()
+    return results
+
+
+def open_driving_source(args):
+    """Open a driving video file, or a webcam selected by integer index.
+
+    A numeric ``--dri_video`` value (e.g. ``0``, ``1``) selects that camera
+    index instead of always falling back to index 0.
+    """
+    src = args.dri_video
+    if src and src.isdigit():
+        camera_index = int(src)
+        vcap = cv2.VideoCapture(camera_index)
+        what = f"camera index {camera_index}"
+    elif src and os.path.exists(src):
+        vcap = cv2.VideoCapture(src)
+        what = f"file {src}"
+    else:
+        # no usable file given -> fall back to the default webcam
+        camera_index = 0
+        vcap = cv2.VideoCapture(camera_index)
+        what = f"default camera (index {camera_index})"
+    if not vcap.isOpened():
+        print(f"could not open driving source ({what})! exit!")
+        exit(1)
+    print(f"driving source: {what}")
+    return vcap
+
+
 def run_with_video(args):
     from src.pipelines.faster_live_portrait_pipeline import FasterLivePortraitPipeline
     from src.utils.utils import video_has_audio
@@ -116,14 +182,7 @@ def run_with_video(args):
     if not ret:
         print(f"no face in {args.src_image}! exit!")
         exit(1)
-    if not args.dri_video or not os.path.exists(args.dri_video):
-        # read frame from camera if no driving video input
-        vcap = cv2.VideoCapture(0)
-        if not vcap.isOpened():
-            print("no camera found! exit!")
-            exit(1)
-    else:
-        vcap = cv2.VideoCapture(args.dri_video)
+    vcap = open_driving_source(args)
     maybe_enable_auto_driving_crop(infer_cfg, vcap)
     fps = int(vcap.get(cv2.CAP_PROP_FPS))
     h, w = pipe.src_imgs[0].shape[:2]
@@ -389,6 +448,8 @@ if __name__ == '__main__':
                         help='driving video')
     parser.add_argument('--cfg', required=False, type=str, default="configs/mlx_infer.yaml", help='inference config')
     parser.add_argument('--realtime', action='store_true', help='realtime inference')
+    parser.add_argument('--list-cameras', action='store_true',
+                        help='enumerate cameras, report which deliver live frames, then exit')
     parser.add_argument('--animal', action='store_true', help='use animal model')
     parser.add_argument('--paste_back', '--paste-back', action='store_true', default=False, help='paste back to origin image')
     parser.add_argument('--det-thresh', type=float, default=None,
@@ -432,6 +493,17 @@ if __name__ == '__main__':
     parser.add_argument('--dri-vy-ratio', type=float, default=None,
                         help='override driving crop y offset')
     args, unknown = parser.parse_known_args()
+
+    if args.list_cameras:
+        print("Probing cameras (this takes a few seconds)...")
+        results = probe_cameras()
+        if not results:
+            print("no cameras found! exit!")
+        else:
+            for idx, status, w, h, fps in results:
+                print(f"  [{idx}] {w}x{h}@{fps:.1f}fps -> {status}")
+            print("Pass a live index via --dri_video <index> (e.g. --dri_video 1)")
+        exit(0)
 
     applied = apply_mlx_profile(args.mlx_profile)
     if args.mlx_profile == "custom":
